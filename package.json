@@ -4,10 +4,10 @@
   "description": "Jot ideas on your Apple Watch; Claude Code works on them while you're away.",
   "type": "module",
   "bin": {
-    "handoff": "cli/handoff.mjs"
+    "handoff": "plugin/cli/handoff.mjs"
   },
   "files": [
-    "cli/",
+    "plugin/cli/",
     "plugin/server/"
   ],
   "engines": {

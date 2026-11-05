@@ -1,6 +1,6 @@
 # Privacy Policy: Handoff
 
-_Last updated: October 8, 2026_
+_Last updated: November 5, 2026_
 
 Handoff has two parts: an Apple Watch app and a Claude Code plugin that runs on your own Mac. The developer runs no servers and collects no data.
 
@@ -15,7 +15,7 @@ Handoff has two parts: an Apple Watch app and a Claude Code plugin that runs on 
 
 - It downloads your encrypted notes from the relay, decrypts them, and saves them in `~/.claude-watch-notes/` on your Mac.
 - It passes each note to your Claude Code session. Claude Code then processes it under your Anthropic account, like anything you type into Claude Code. See [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
-- When Claude finishes a note, it records a short summary with the plugin's `watch_note_done` tool. The summary is saved in the same place, on your Mac only, and is never sent to the relay or anywhere else.
+- When Claude finishes a note, it records a short summary with the plugin's `watch_note_done` tool. The summary is saved in the same place, on your Mac only, and is never sent to the relay or anywhere else (except for notes you emailed; see below).
 - Claude can also include a one-line suggested next prompt. It's encrypted with the same key and sent through the relay to the watch, which shows it with an **Accept suggestion** button. Claude's response itself is never sent to the watch.
 - Each Claude Code session started with `handoff start` sends the watch its chat name (your folder's name, or one you choose) about once a minute, encrypted, so the watch can list open chats. Notes you address to a chat carry that name too.
 
@@ -26,6 +26,15 @@ If you run `handoff host` on your Mac, the watch can start new chats:
 - It sends the watch the names of the folders inside the folder you gave it, encrypted, so you can browse them. Only folder names are sent, never file names or file contents.
 - When you pick a folder on the watch, it registers a chat there. If you ask for a new folder, it creates that empty folder first. It can't reach anything outside the folder you gave it.
 - Each note you send to that chat is run by Claude Code on your Mac (`claude -p`) in that folder, under your Anthropic account, like the rest of Handoff. A log of what Claude did is saved in `~/.claude-watch-notes/logs/`, and the list of chats in `~/.claude-watch-notes/host-chats.json`. Neither leaves your Mac.
+
+## What `handoff mail` does (optional)
+
+If you run `handoff mail`, you can also email notes to yourself at you+claude@gmail.com:
+
+- It uses the Mail app on your Mac, with the account you already set up there. It reads only messages from the last two days in that account's Sent mailbox that you addressed to the +claude address. It doesn't read your inbox or any other mail.
+- It saves those notes in `~/.claude-watch-notes/` like watch notes, and Claude Code processes them the same way.
+- When Claude finishes an emailed note, Mail sends the summary (and any suggestion) back to you as a reply, from your own account. **For emailed notes, the summary leaves your Mac** and is stored in your email, like any email you send. Summaries of watch notes never leave your Mac.
+- None of this goes through ntfy.sh or any server run by the developer. The emails travel through your email provider, as usual.
 
 ## Everything that travels through the relay
 
@@ -42,6 +51,7 @@ All of it is encrypted with your key, so ntfy.sh can't read any of it:
 ## How long data is kept
 
 - **On your Mac:** notes, Claude's summaries, and host chat logs stay in `~/.claude-watch-notes/` until you delete them.
+- **In your email (`handoff mail` only):** the notes you emailed and Claude's replies stay in your mailbox until you delete them.
 - **On the watch:** up to 12 notes of history (until you delete them in Settings), your draft, the last suggestion, and your chosen chat.
 - **On the relay (ntfy.sh):** encrypted messages for up to about 12 hours, and file attachments (notes of 4 KB or more) for about 3 hours.
 - **By the developer:** nothing, because no data ever reaches the developer.

@@ -39,7 +39,7 @@ server.stdout.on('data', d => {
 // `handoff host` in dry-run mode: records which chats the watch asks it to start.
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-e2e-root-')))
 fs.mkdirSync(path.join(root, 'e2e-project/sub'), { recursive: true })
-const host = spawn(process.execPath, [path.join(ROOT, 'cli/handoff.mjs'), 'host', root], { env: { ...env, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1' } })
+const host = spawn(process.execPath, [path.join(ROOT, 'plugin/cli/handoff.mjs'), 'host', root], { env: { ...env, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1' } })
 let hostOut = ''
 host.stdout.on('data', d => { hostOut += d })
 

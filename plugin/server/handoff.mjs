@@ -7,7 +7,7 @@
 //   node handoff.mjs         # MCP server (Claude Code spawns this)
 //   node handoff.mjs pair    # show a code; type it on the watch to pair
 //
-// This file never launches other programs. The `handoff` terminal command (cli/) does that.
+// This file never launches other programs. The `handoff` terminal command (../cli/) does that.
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -52,6 +52,9 @@ if (process.argv[2] === 'pair') {
 
 // ---------- MCP over stdio ----------
 fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
+// Where the plugin is installed now (updates move it), so the `handoff` command from
+// /handoff:setup always runs the current version.
+if (process.env.CLAUDE_PLUGIN_ROOT) try { writeAtomic(path.join(DIR, 'plugin-root'), process.env.CLAUDE_PLUGIN_ROOT) } catch {}
 
 const out = msg => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
 const log = (...a) => process.stderr.write(`[handoff] ${a.join(' ')}\n`)
@@ -70,6 +73,7 @@ The user is away from the computer and will not see or answer questions: treat e
 If an action is blocked or denied by the permission system, do not retry it or look for a way around it: skip that step, finish what you can, and list what was blocked in your summary for the user to do when they get home.
 Claude's response is never sent to the watch. Every note must end with a call to watch_note_done with its note_id and a short summary, including quick questions (put the answer in the summary) and notes you decide not to act on. Answering in the terminal alone is not enough: the user isn't there, and watch_note_done is how the result is saved for them and how the suggestion reaches the watch.
 You may also pass a suggestion: the one prompt the user would most likely send next, written as the user would type it (under 80 characters, e.g. "add tests for the new parser"). It appears on the watch with an Accept suggestion button that sends it back to you as a new note. Leave it out when there's no obvious next step.
+Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
 If you were not started as a channel, call watch_inbox to fetch pending notes.`
 
 const TOOLS = [
@@ -80,7 +84,7 @@ const TOOLS = [
   },
   {
     name: 'watch_note_done',
-    description: 'Mark a watch note as done, with a short summary of what was done (stays on this machine).',
+    description: 'Mark a watch note as done, with a short summary of what was done (stays on this machine; for emailed notes it is also emailed back).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -100,7 +104,7 @@ const allNotes = () => fs.readdirSync(NOTES).filter(f => f.endsWith('.json'))
 function push(note) {
   out({
     method: 'notifications/claude/channel',
-    params: { content: note.text, meta: { note_id: note.id, at: note.at } },
+    params: { content: note.text, meta: { note_id: note.id, at: note.at, ...(note.source && { source: note.source }) } },
   })
 }
 
@@ -148,6 +152,7 @@ async function callTool(name, args = {}) {
     const suggestion = typeof args.suggestion === 'string' ? args.suggestion.trim().slice(0, 200) : ''
     if (suggestion) n.suggestion = suggestion
     writeAtomic(f, JSON.stringify(n, null, 2))
+    if (n.source === 'email') return `Marked ${n.id} done. \`handoff mail\` will email the summary back.`
     if (!suggestion) return `Marked ${n.id} done.`
     return await sendSuggestion(suggestion, n.id)
       ? `Marked ${n.id} done. Suggestion sent to the watch.`
@@ -162,7 +167,7 @@ function handle(msg) {
     return out({ id, result: {
       protocolVersion: params?.protocolVersion || '2025-06-18',
       capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
-      serverInfo: { name: 'handoff', version: '2.1.0' },
+      serverInfo: { name: 'handoff', version: '2.2.0' },
       instructions: INSTRUCTIONS,
     } })
   }

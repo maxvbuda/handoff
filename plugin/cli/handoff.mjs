@@ -5,6 +5,8 @@
 //   handoff pair              pair your watch (shows a code to type on it)
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
+//   handoff mail [address]    email Claude too, through the Mail app
+//   handoff install           put this command on your PATH (what /handoff:setup runs)
 
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -13,9 +15,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CONFIG, DIR, NOTES, events, noteFile, open, readConfig, saveNote, seal, tryClaim, writeAtomic } from '../plugin/server/relay.mjs'
+import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, saveNote, seal, tryClaim, writeAtomic } from '../server/relay.mjs'
 
-const SERVER = fileURLToPath(new URL('../plugin/server/handoff.mjs', import.meta.url))
+const SERVER = fileURLToPath(new URL('../server/handoff.mjs', import.meta.url))
 
 // Custom channels need the development flag until the plugin is on Anthropic's approved list;
 // then this becomes ['--channels', 'plugin:handoff@claude-plugins-official'].
@@ -61,6 +63,10 @@ if (cmd === 'start') {
   })
 } else if (cmd === 'host') {
   host(path.resolve(rest[0] || process.cwd()))
+} else if (cmd === 'mail') {
+  mail(rest[0])
+} else if (cmd === 'install') {
+  install()
 } else {
   console.log(`Handoff: jot ideas on your Apple Watch; Claude Code does them while you're away.
 
@@ -71,6 +77,11 @@ if (cmd === 'start') {
   handoff host [folder]     Let the watch start new chats: lists the projects in folder
                             (default: this one) on the watch and opens a Terminal window
                             running handoff start in the one you pick
+  handoff mail [address]    Email Claude too: notes you email yourself at you+claude@…
+                            go to your handoff start sessions, and the summary comes back
+                            as a reply. Uses the Mail app; keep this running
+  handoff install           Put this command on your PATH (/handoff:setup in Claude Code
+                            runs it). It always runs the plugin's current version
 `)
 }
 
@@ -307,5 +318,164 @@ function host(root) {
     }
     logTo(n.to, failed ? `━━ ${stamp()} Failed: ${failed}\n` : `━━ ${stamp()} Done.\n`)
     console.log(`Chat "${n.to}": ${failed ? `failed (${failed})` : 'done'}`)
+  }
+}
+
+// ---------- mail: email Claude through the Mail app ----------
+// Notes you email yourself at you+claude@… are read from your account's Sent mailbox in the Mail
+// app and saved like watch notes, so `handoff start` sessions pick them up. Only mail you sent
+// counts, so nobody else can email Claude instructions. When a note is done, its summary goes back
+// as a reply in the same thread, addressed to +claude, so replying to it sends the next note.
+function osa(args) {
+  const script = fileURLToPath(new URL('./mail.js', import.meta.url))
+  return new Promise((resolve, reject) =>
+    execFile(process.env.CLAUDE_WATCH_NOTES_OSASCRIPT || 'osascript', ['-l', 'JavaScript', script, ...args],
+      { timeout: 120_000, maxBuffer: 32 << 20 }, (e, out, err) => {
+        if (e) {
+          const msg = String(err || e.message).trim().replace(/^[\s\S]*execution error: (Error: )*/, '')
+          return reject(new Error(/-1743|not authori[sz]ed/i.test(msg)
+            ? 'not allowed to use Mail. Allow it in System Settings → Privacy & Security → Automation, then restart this.' : msg))
+        }
+        try { resolve(JSON.parse(out)) } catch { reject(new Error('Mail gave an answer that isn\'t JSON')) }
+      }))
+}
+
+// The note in an email: the subject (unless it's a reply) and the body, without the quoted thread.
+function mailText(subject, content) {
+  const body = String(content ?? '').replace(/\r/g, '')
+    .split(/^On [^\n]*(?:\n[^\n]*)?wrote:[ \t]*$/m)[0] // "On <date>, <name> wrote:", maybe wrapped
+    .split(/^-- ?$/m)[0] // signature
+    .split('\n').filter(l => !l.startsWith('>')).join('\n').trim()
+  subject = String(subject ?? '').trim()
+  return (!subject || /^(re|fwd?):/i.test(subject) ? body : `${subject}\n\n${body}`).trim()
+}
+
+async function mail(arg) {
+  const FOOTER = 'Handoff · reply to send Claude another note'
+  const DAYS = 2 // how far back to look
+  if (process.platform !== 'darwin' && !process.env.CLAUDE_WATCH_NOTES_OSASCRIPT) {
+    console.error('`handoff mail` uses the Mail app, so it only runs on a Mac.')
+    process.exit(1)
+  }
+  let me = arg?.toLowerCase()
+  if (!me) {
+    let addrs
+    try { addrs = await osa(['accounts']) } catch (e) { console.error(`Mail: ${e.message}`); process.exit(1) }
+    const gmail = addrs.filter(a => /@(gmail|googlemail)\.com$/i.test(a))
+    if (gmail.length !== 1) {
+      console.error(`Which address should Claude use? Run: handoff mail <address>\n  (Mail has: ${addrs.join(', ') || 'no accounts'})`)
+      process.exit(1)
+    }
+    me = gmail[0].toLowerCase()
+  }
+  if (!/^[^@\s+]+(\+[^@\s]*)?@[^@\s]+$/.test(me)) { console.error(`Not an email address: ${me}`); process.exit(1) }
+  const [user, domain] = me.split('@')
+  me = `${user.split('+')[0]}@${domain}`
+  const to = `${user.split('+')[0]}+claude@${domain}`
+  fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
+
+  const save = m => {
+    const text = mailText(m.subject, m.content).slice(0, 20000)
+    if (!text || text.includes(FOOTER)) return // empty, or one of our own replies
+    const id = `mail-${crypto.createHash('sha256').update(String(m.messageId)).digest('hex').slice(0, 24)}`
+    const at = typeof m.at === 'string' && !isNaN(Date.parse(m.at)) ? m.at : new Date().toISOString()
+    const note = { id, text, at, status: 'new', source: 'email', mail: { messageId: String(m.messageId), subject: String(m.subject ?? '') } }
+    try {
+      fs.writeFileSync(noteFile(id), JSON.stringify(note, null, 2), { flag: 'wx' })
+      console.log(`Email: ${text.split('\n')[0].slice(0, 70)}`)
+    } catch {} // already have it
+  }
+
+  // Each reply is claimed with an O_EXCL marker, so it's sent once even with two of these running.
+  const replies = async () => {
+    let files = []
+    try { files = fs.readdirSync(NOTES).filter(f => f.startsWith('mail-') && f.endsWith('.json')) } catch {}
+    for (const f of files) {
+      let n
+      try { n = JSON.parse(fs.readFileSync(path.join(NOTES, f), 'utf8')) } catch { continue }
+      if (n.source !== 'email' || !n.mail || n.replied || !['done', 'failed'].includes(n.status)) continue
+      const marker = noteFile(n.id).replace(/\.json$/, '.replied')
+      try {
+        if (!alive(Number(fs.readFileSync(marker, 'utf8')))) fs.rmSync(marker) // left by one that crashed
+      } catch {}
+      try { fs.writeFileSync(marker, String(process.pid), { flag: 'wx' }) } catch { continue }
+      let body = n.summary || 'Done.'
+      if (n.suggestion) body += `\n\nNext step? Reply with: ${n.suggestion}`
+      body += `\n\n—\n${FOOTER}`
+      try {
+        await osa(['reply', me, to, n.mail.messageId, n.mail.subject, body])
+        let latest = n
+        try { latest = JSON.parse(fs.readFileSync(noteFile(n.id), 'utf8')) } catch {}
+        writeAtomic(noteFile(n.id), JSON.stringify({ ...latest, replied: true }, null, 2))
+        console.log(`Replied: ${n.text.split('\n')[0].slice(0, 70)}`)
+      } catch (e) {
+        fs.rmSync(marker, { force: true })
+        console.error(`Couldn't send a reply yet (will retry): ${e.message}`)
+      }
+    }
+  }
+
+  console.log(`Handoff mail: email ${to} from ${me}, and your handoff start sessions will work on it.\n` +
+    'The summary comes back as a reply. Keep this running; Ctrl+C stops it.\n')
+  process.on('SIGINT', () => process.exit(0))
+  process.on('SIGTERM', () => process.exit(0))
+  let failing = false
+  for (;;) {
+    try {
+      for (const m of await osa(['fetch', me, to, String(DAYS)])) save(m)
+      if (failing) console.log('Mail is working again.')
+      failing = false
+    } catch (e) {
+      if (!failing) console.error(`Mail: ${e.message}`)
+      failing = true
+    }
+    await replies()
+    await new Promise(r => setTimeout(r, Number(process.env.CLAUDE_WATCH_NOTES_MAIL_MS) || 60_000))
+  }
+}
+
+// ---------- install: put `handoff` on your PATH (/handoff:setup runs this) ----------
+// Writes a small script that runs the installed plugin's copy of this file. Plugin updates move the
+// plugin, so it looks the location up in ~/.claude-watch-notes/plugin-root, which the plugin's
+// server rewrites every time a Claude Code session starts.
+function install() {
+  const MARK = 'Installed by the Handoff plugin'
+  fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
+  writeAtomic(path.join(DIR, 'plugin-root'), path.dirname(path.dirname(fileURLToPath(import.meta.url))))
+  const home = os.homedir()
+  const onPath = (process.env.PATH || '').split(path.delimiter)
+  const local = path.join(home, '.local', 'bin')
+  const bin = [local, path.join(home, 'bin')].find(d => onPath.includes(d)) || local
+  const target = path.join(bin, 'handoff')
+  try {
+    if (!fs.readFileSync(target, 'utf8').includes(MARK)) {
+      console.error(`${target} already exists and isn't from Handoff, so it was left alone.`)
+      process.exit(1)
+    }
+  } catch {} // not there yet
+  fs.mkdirSync(bin, { recursive: true })
+  fs.writeFileSync(target, `#!/bin/sh
+# ${MARK} (/handoff:setup). Runs the installed plugin's \`handoff\` command.
+root=$(cat "\${CLAUDE_WATCH_NOTES_DIR:-$HOME/.claude-watch-notes}/plugin-root" 2>/dev/null)
+if [ ! -f "$root/cli/handoff.mjs" ]; then
+  echo "handoff: can't find the Handoff plugin. In Claude Code, run /plugin install handoff@handoff, then /handoff:setup." >&2
+  exit 1
+fi
+exec node "$root/cli/handoff.mjs" "$@"
+`)
+  fs.chmodSync(target, 0o755)
+  console.log(`Installed the handoff command at ${target}.`)
+
+  if (!onPath.includes(bin)) {
+    const rc = path.join(home, process.env.SHELL?.endsWith('bash') ? '.bash_profile' : '.zshrc')
+    const line = 'export PATH="$HOME/.local/bin:$PATH" # added by Handoff'
+    let current = ''
+    try { current = fs.readFileSync(rc, 'utf8') } catch {}
+    if (!current.includes(line)) fs.appendFileSync(rc, `\n${line}\n`)
+    console.log(`Added ${bin} to your PATH in ${rc}. Open a new Terminal window to use it.`)
+  } else {
+    // Another `handoff` earlier in PATH (an old npm install, say) would run instead.
+    const first = onPath.slice(0, onPath.indexOf(bin)).map(d => path.join(d, 'handoff')).find(f => fs.existsSync(f))
+    if (first) console.log(`Note: ${first} comes first in your PATH and will run instead. Remove it to use this one.`)
   }
 }

@@ -7,7 +7,7 @@ Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plu
 ```
 
 - **Watch app**: one SwiftUI file, watch-only (no iPhone app), no assets or dependencies. It builds for watchOS 26 / Apple Watch SE 3 with `-Osize`, whole-module optimization, and dead-code stripping. Notes queue offline and retry when the app comes back to the foreground.
-- **Plugin** (`plugin/`): a Claude Code plugin around one Node file with zero dependencies. It decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
+- **Plugin** (`plugin/`): a Claude Code plugin around one Node file with zero dependencies, plus the `handoff` terminal command (`plugin/cli/`). It decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
 - **Privacy**: notes are end-to-end encrypted on the watch with a per-device key (stored in the Keychain). The relay only sees ciphertext on a random topic.
 
 ## Setup
@@ -19,7 +19,7 @@ Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plu
 /plugin install handoff@handoff
 ```
 
-**2. Get the `handoff` command** (in your terminal): `npm install -g github:maxvbuda/claude-watch-notes-mcp`, or `npm link` from a clone.
+**2. Get the `handoff` command**: it comes with the plugin. In Claude Code, run `/handoff:setup` once. It puts `handoff` in `~/.local/bin` and keeps it pointed at the current version when the plugin updates. (`npm install -g github:maxvbuda/claude-watch-notes-mcp` still works too.)
 
 **3. Install the watch app**: from the App Store, or build it yourself: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
 
@@ -56,6 +56,21 @@ On the watch, tap **Jot an idea…** and add as many lines as you like. Swipe a 
 When Claude finishes a note it can suggest a next step, like Claude Code's prompt suggestions. The suggestion shows at the top of the watch app. Tap **Accept suggestion** to send it to Claude as a new note, or swipe it away. To turn suggestions off, go to **Settings → Suggestions**.
 
 When you get home, the work is done. Claude calls `watch_note_done` with a summary for each note; the summaries are in `~/.claude-watch-notes/notes/`. Notes that arrive while no session is running are handed to the next session that starts, exactly once even with several sessions open.
+
+## Email (optional)
+
+You can also email Claude, from your phone, a school computer, or anywhere you have Gmail. It uses the Mail app on your Mac, so you don't need a Google Script or any new account permissions. Your email account just has to be set up in Mail.
+
+```sh
+handoff mail              # or: handoff mail you@gmail.com
+```
+
+Keep it running next to a `handoff start` session. Then send an email from your own account to **you+claude@gmail.com**. The subject and body are the note, and the session works on it like a note from the watch. When Claude is done, the summary comes back as a reply in the same thread from "Claude (Handoff)". Reply to that to send the next note.
+
+- Only emails you sent count. `handoff mail` reads them from your account's **Sent** mailbox, so nobody else can email Claude instructions, even by faking your address.
+- Quoted text from earlier in the thread and your signature are left out of the note.
+- The first time, macOS asks whether your terminal can control Mail. Click **OK**, or turn it on later in System Settings → Privacy & Security → Automation.
+- It checks Mail once a minute and looks back two days. Your Mac has to be awake, which `handoff start` already takes care of.
 
 ## Notes
 

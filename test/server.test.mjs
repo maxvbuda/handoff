@@ -477,7 +477,7 @@ describe('sessions, restarts and the network', () => {
 })
 
 describe('host command (new chats from the watch)', () => {
-  const CLI = new URL('../cli/handoff.mjs', import.meta.url).pathname
+  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
   test('lists projects, opens only listed ones, ignores stale/forged requests, quotes names safely', async () => {
     const dir = tmpDir(); const cfg = pairDir(dir)
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-root-')))
@@ -611,6 +611,133 @@ describe('host command (new chats from the watch)', () => {
     assert.equal(last.args[last.args.indexOf('--resume') + 1], session)
     assert.equal(ran().filter(r => r.prompt.includes(first.id)).length, 1) // nothing re-run after the restart
     h.kill('SIGTERM'); await new Promise(r => h.on('exit', r))
+  })
+})
+
+describe('mail command (email Claude through the Mail app)', () => {
+  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
+  let dir, s, mailbox, log, failFile, h, out
+  const box = () => JSON.parse(fs.readFileSync(mailbox, 'utf8'))
+  const send = m => fs.writeFileSync(mailbox, JSON.stringify({ ...box(), sent: [...box().sent, { to: 'me+claude@gmail.com', at: new Date().toISOString(), ...m }] }))
+  const replies = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
+  const until = async (cond, what) => { const stop = Date.now() + 8000; while (!cond()) { if (Date.now() > stop) throw new Error(`timed out: ${what}\n${out}`); await sleep(50) } }
+  const mailId = messageId => `mail-${crypto.createHash('sha256').update(messageId).digest('hex').slice(0, 24)}`
+  const saved = id => JSON.parse(fs.readFileSync(path.join(dir, 'notes', `${id}.json`), 'utf8'))
+  function startMail(args = []) {
+    out = ''
+    h = spawn(process.execPath, [CLI, 'mail', ...args], { env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_MAIL_MS: '150',
+      CLAUDE_WATCH_NOTES_OSASCRIPT: new URL('./fake-osascript.mjs', import.meta.url).pathname, FAKE_MAIL: mailbox, FAKE_MAIL_LOG: log, FAKE_MAIL_FAIL: failFile } })
+    spawned.add(h)
+    h.stdout.on('data', d => { out += d }); h.stderr.on('data', d => { out += d })
+    return h
+  }
+  const stopMail = () => { h.kill('SIGTERM'); return new Promise(r => h.exitCode !== null ? r() : h.on('exit', r)) }
+
+  before(async () => {
+    dir = tmpDir(); pairDir(dir)
+    mailbox = path.join(dir, 'mailbox.json'); log = path.join(dir, 'replies.log'); failFile = path.join(dir, 'fail')
+    fs.writeFileSync(mailbox, JSON.stringify({ accounts: ['me@gmail.com', 'me@icloud.com'], sent: [] }))
+    s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_SWEEP_MS: '150' } })
+    await s.ready
+    startMail()
+    await until(() => /email me\+claude@gmail\.com from me@gmail\.com/.test(out), 'mail started')
+  })
+  after(async () => { await stopMail(); await s.stop() })
+
+  test('an emailed note reaches the session once, and the summary is emailed back in the thread', async () => {
+    send({ messageId: '<a1@mail.gmail.com>', subject: 'Fix the typo', content: 'in the README please\n\n-- \nMax' })
+    const id = mailId('<a1@mail.gmail.com>')
+    const m = await s.waitFor(pushFor(id), 8000, 'email push')
+    assert.equal(m.params.content, 'Fix the typo\n\nin the README please')
+    assert.equal(m.params.meta.source, 'email')
+    await sleep(500)
+    assert.equal(s.pushes().filter(pushFor(id)).length, 1)
+    const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: id, summary: 'Fixed it.', suggestion: 'add a spellcheck' } })
+    assert.match(r.result.content[0].text, /email the summary back/)
+    await until(() => replies().length === 1, 'reply')
+    const [rep] = replies()
+    assert.deepEqual([rep.me, rep.to, rep.messageId, rep.subject], ['me@gmail.com', 'me+claude@gmail.com', '<a1@mail.gmail.com>', 'Fix the typo'])
+    assert.match(rep.body, /^Fixed it\.\n\nNext step\? Reply with: add a spellcheck\n\n—\nHandoff · /)
+    await until(() => saved(id).replied === true, 'marked replied')
+  })
+
+  test('a reply in the thread is a new note without the quoted text; our own replies are never notes', async () => {
+    send({ messageId: '<ours@x>', subject: 'Re: Fix the typo', content: 'Fixed it.\n\n—\nHandoff · reply to send Claude another note' })
+    send({ messageId: '<a2@x>', subject: 'Re: Fix the typo', content: 'now the other one\n\nOn Wed, Nov 5, 2026 at 10:00 AM Claude (Handoff) <\nme@gmail.com> wrote:\n> Fixed it.\n' })
+    const m = await s.waitFor(pushFor(mailId('<a2@x>')), 8000, 'reply note')
+    assert.equal(m.params.content, 'now the other one')
+    await sleep(500)
+    assert.ok(!fs.existsSync(path.join(dir, 'notes', `${mailId('<ours@x>')}.json`)))
+  })
+
+  test('mail to other addresses is ignored', async () => {
+    send({ messageId: '<other@x>', subject: 'hi mom', content: 'dinner?', to: 'mom@example.com' })
+    await sleep(600)
+    assert.ok(!fs.existsSync(path.join(dir, 'notes', `${mailId('<other@x>')}.json`)))
+  })
+
+  test('a reply that fails is retried, and a restart never sends one twice', async () => {
+    fs.writeFileSync(failFile, '2')
+    send({ messageId: '<a3@x>', subject: 'third', content: 'go' })
+    const id = mailId('<a3@x>')
+    await s.waitFor(pushFor(id), 8000, 'third push')
+    await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: id, summary: 'ok' } })
+    await until(() => replies().some(r => r.messageId === '<a3@x>'), 'retried reply')
+    assert.match(out, /will retry/)
+    await until(() => saved(id).replied === true, 'marked replied')
+    const before = replies().length
+    await stopMail(); startMail(['me@gmail.com'])
+    await sleep(800)
+    assert.equal(replies().length, before)
+    assert.equal(fs.readdirSync(path.join(dir, 'notes')).filter(f => f.startsWith('mail-') && f.endsWith('.json')).length, 3)
+  })
+
+  test('asks which address when Mail has no single Gmail account', async () => {
+    const p = spawn(process.execPath, [CLI, 'mail'], { env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir,
+      CLAUDE_WATCH_NOTES_OSASCRIPT: new URL('./fake-osascript.mjs', import.meta.url).pathname,
+      FAKE_MAIL: (fs.writeFileSync(path.join(dir, 'two.json'), JSON.stringify({ accounts: ['a@gmail.com', 'b@gmail.com'], sent: [] })), path.join(dir, 'two.json')) } })
+    let err = ''
+    p.stderr.on('data', d => { err += d })
+    const code = await new Promise(r => p.on('exit', r))
+    assert.equal(code, 1)
+    assert.match(err, /handoff mail <address>[\s\S]*a@gmail\.com, b@gmail\.com/)
+  })
+})
+
+describe('install command (the handoff command from the plugin)', () => {
+  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
+  const run = (file, args, env) => new Promise(r => {
+    const p = spawn(file, args, { env })
+    let out = ''
+    p.stdout.on('data', d => { out += d }); p.stderr.on('data', d => { out += d })
+    p.on('exit', code => r({ code, out }))
+  })
+
+  test('installs a command that follows the plugin to wherever the server last ran from', async () => {
+    const home = tmpDir(), dir = path.join(home, 'data')
+    const env = { ...process.env, HOME: home, CLAUDE_WATCH_NOTES_DIR: dir, PATH: `${path.join(home, '.local', 'bin')}:${path.dirname(process.execPath)}:/usr/bin:/bin` }
+    let r = await run(process.execPath, [CLI, 'install'], env)
+    assert.equal(r.code, 0, r.out)
+    const shim = path.join(home, '.local', 'bin', 'handoff')
+    r = await run(shim, [], env)
+    assert.match(r.out, /handoff pair/)
+
+    // A plugin update moves the plugin; the server records the new place when a session starts.
+    const moved = path.join(home, 'plugin-v2')
+    fs.cpSync(path.dirname(path.dirname(CLI)), moved, { recursive: true })
+    fs.appendFileSync(path.join(moved, 'cli', 'handoff.mjs'), "\nif (process.argv[2] === 'whoami') console.log('v2')\n")
+    const s = startServer(dir, { env: { CLAUDE_PLUGIN_ROOT: moved } })
+    await s.ready; await s.stop()
+    assert.equal(fs.readFileSync(path.join(dir, 'plugin-root'), 'utf8'), moved)
+    r = await run(shim, ['whoami'], env)
+    assert.match(r.out, /v2/)
+
+    // Running it again is fine; someone else's file with that name is left alone.
+    assert.equal((await run(process.execPath, [CLI, 'install'], env)).code, 0)
+    fs.writeFileSync(shim, '#!/bin/sh\necho mine\n')
+    r = await run(process.execPath, [CLI, 'install'], env)
+    assert.equal(r.code, 1); assert.match(r.out, /left alone/)
+    assert.equal(fs.readFileSync(shim, 'utf8'), '#!/bin/sh\necho mine\n')
   })
 })
 
