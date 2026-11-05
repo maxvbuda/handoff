@@ -19,7 +19,9 @@ struct ClaudeNotesApp: App {
             .environment(store)
         }
             .onChange(of: phase) {
-                if phase == .active { Task { await store.flush(); await store.refresh() } }
+                // At the same time: each is a network round trip, so don't queue them up.
+                if phase == .active { Task { async let f: Void = store.flush(); async let r: Void = store.refresh(); _ = await (f, r) } }
+                else if phase == .background { store.finishSendingInBackground() }
             }
     }
 }
@@ -32,6 +34,18 @@ enum Relay {
     #else
     static let base = "https://ntfy.sh"
     #endif
+
+    /// Every relay request goes through this. A request that gets no bytes for 15s fails (the
+    /// default waits 60s), so one bad connection doesn't hold up the next check for a minute.
+    /// Without its phone nearby, the watch goes online over its own Wi-Fi or cellular, which can
+    /// take a few seconds to wake up: requests wait for that (up to 30s in all) instead of failing.
+    static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config)
+    }()
 }
 
 struct Pairing: Codable {
@@ -95,7 +109,8 @@ final class Store {
     var target: String? { didSet { defaults.set(target, forKey: "target") } }
     static let chatWindow = "3m" // chats announce themselves every minute
     private(set) var pairing = Keychain.load().flatMap { try? JSONDecoder().decode(Pairing.self, from: $0) }
-    private var flushing = false
+    private var sending: Task<Void, Never>?
+    private var refreshing: Task<Void, Never>?
     private var retry: Task<Void, Never>?
     let defaults: UserDefaults
     static let keep = 12
@@ -142,9 +157,18 @@ final class Store {
         save()
     }
 
+    /// Checks chats and suggestions at the same time. Calls made while one is running (the app
+    /// becoming active and the list appearing both ask) wait for it instead of starting another.
     func refresh() async {
-        await checkChats()
-        await checkSuggestion()
+        if let refreshing { return await refreshing.value }
+        let task = Task {
+            async let c: Void = checkChats()
+            async let s: Void = checkSuggestion()
+            _ = await (c, s)
+        }
+        refreshing = task
+        await task.value
+        refreshing = nil
     }
 
     /// The chat picker's choices: open chats, plus the chosen one even while it's offline.
@@ -157,7 +181,7 @@ final class Store {
     func checkChats() async {
         guard let pairing else { return }
         let url = URL(string: "\(pairing.topicURL.absoluteString)-c/json?poll=1&since=\(Self.chatWindow)")!
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
+        guard let (data, _) = try? await Relay.session.data(from: url),
               self.pairing?.topicURL == pairing.topicURL else { return }
         var open = Set<String>()
         var hostProjects: [String] = []
@@ -189,19 +213,34 @@ final class Store {
     }
 
     /// The subfolders of `path` (relative to the host's folder; "" is the top), or nil if the Mac didn't answer.
-    func listFolders(_ path: String, polls: Int = 20) async -> [String]? {
+    func listFolders(_ path: String, timeout: Duration = .seconds(12)) async -> [String]? {
         guard let pairing else { return nil }
         let id = UUID().uuidString
+        let key = SymmetricKey(data: pairing.key)
         let since = Int(Date.now.timeIntervalSince1970) - 1
         guard await askHost(["ls": path, "id": id]) else { return nil }
-        let url = URL(string: "\(pairing.topicURL.absoluteString)-l/json?poll=1&since=\(since)")!
-        for _ in 0..<polls {
-            try? await Task.sleep(for: .milliseconds(600))
-            guard let (data, _) = try? await URLSession.shared.data(from: url) else { continue }
-            if let reply = Self.messages(in: data, key: SymmetricKey(data: pairing.key)).first(where: { $0.body.id == id }) {
-                return reply.body.dirs ?? []
-            }
+        // Listen on the reply topic instead of polling it, so the folders show as soon as the Mac
+        // answers. `since` covers a reply that arrives before the stream is open.
+        let url = URL(string: "\(pairing.topicURL.absoluteString)-l/json?since=\(since)")!
+        return await withTaskGroup(of: [String]?.self) { group in
+            group.addTask { await Self.listing(id: id, at: url, key: key) }
+            group.addTask { try? await Task.sleep(for: timeout); return nil }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
+    }
+
+    /// Streams `url` until the folder listing answering request `id` arrives.
+    nonisolated private static func listing(id: String, at url: URL, key: SymmetricKey) async -> [String]? {
+        guard let (bytes, _) = try? await Relay.session.bytes(from: url) else { return nil }
+        do {
+            for try await line in bytes.lines {
+                if let reply = messages(in: Data(line.utf8), key: key).first(where: { $0.body.id == id }) {
+                    return reply.body.dirs ?? []
+                }
+            }
+        } catch {}
         return nil
     }
 
@@ -236,7 +275,7 @@ final class Store {
     }
 
     /// Decrypts a relay poll response, oldest first, skipping anything not sealed with our key.
-    private static func messages(in data: Data, key: SymmetricKey) -> [(id: String, body: BackMessage)] {
+    nonisolated private static func messages(in data: Data, key: SymmetricKey) -> [(id: String, body: BackMessage)] {
         data.split(separator: UInt8(ascii: "\n")).compactMap { line in
             guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: line), let id = ev.id,
                   let box = ev.message.flatMap({ Data(base64Encoded: $0) }),
@@ -251,7 +290,7 @@ final class Store {
         guard suggestionsOn, let pairing else { return }
         let since = defaults.string(forKey: "suggestionSince") ?? "12h"
         let url = URL(string: "\(pairing.topicURL.absoluteString)-s/json?poll=1&since=\(since)")!
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
+        guard let (data, _) = try? await Relay.session.data(from: url),
               suggestionsOn, self.pairing?.topicURL == pairing.topicURL else { return } // changed meanwhile
         // Advance past everything seen, including junk, so it isn't fetched again.
         for line in data.split(separator: UInt8(ascii: "\n")) {
@@ -279,10 +318,31 @@ final class Store {
 
     /// Delivers queued notes oldest first. On failure, retries every 15s while the app runs
     /// (watchOS suspends us in the background), and again whenever the app becomes active.
+    /// A call made while a delivery is running waits for that one to finish.
     func flush() async {
-        guard !flushing, let pairing else { return }
-        flushing = true
-        defer { flushing = false }
+        if let sending { return await sending.value }
+        guard pairing != nil else { return }
+        let task = Task { await deliver() }
+        sending = task
+        await task.value
+        sending = nil
+    }
+
+    /// The app is leaving the screen with notes still to send: ask watchOS for a little more time
+    /// to finish. On a watch without its phone nearby, sending often takes longer than the moment
+    /// between lowering your wrist and the app being suspended.
+    func finishSendingInBackground() {
+        guard pending > 0 else { return }
+        ProcessInfo.processInfo.performExpiringActivity(withReason: "Sending your notes") { expired in
+            guard !expired else { return }
+            let done = DispatchSemaphore(value: 0)
+            Task { @MainActor in await self.flush(); done.signal() }
+            _ = done.wait(timeout: .now() + 25) // holds the extra time until sent, or watchOS ends it
+        }
+    }
+
+    private func deliver() async {
+        guard let pairing else { return }
         for note in notes.reversed() where !note.sent {
             guard await Self.post(note, to: pairing) else { return scheduleRetry() }
             if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i].sent = true }
@@ -347,7 +407,7 @@ enum Pairer {
         let poll = URL(string: "\(pairURL.absoluteString)/json?poll=1&since=\(offerID)")!
         for _ in 0..<polls {
             try await Task.sleep(for: every)
-            guard let (data, _) = try? await URLSession.shared.data(from: poll) else { continue }
+            guard let (data, _) = try? await Relay.session.data(from: poll) else { continue }
             for line in data.split(separator: UInt8(ascii: "\n")) {
                 guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: line),
                       let box = ev.message.flatMap({ Data(base64Encoded: $0) }),
@@ -375,7 +435,7 @@ enum Ntfy {
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.httpMethod = "POST"
         req.httpBody = sealed.base64EncodedData()
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await Relay.session.data(for: req)
         guard (res as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return (try? JSONDecoder().decode(Event.self, from: data))?.id ?? ""
     }

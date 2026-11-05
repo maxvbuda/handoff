@@ -6,7 +6,7 @@ Jot ideas on your Apple Watch. Claude Code works on them while you're away. **Th
 Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plugin ──channel──▶ Claude Code session
 ```
 
-- **Watch app**: one SwiftUI file, watch-only (no iPhone app), no assets or dependencies. It builds for watchOS 26 / Apple Watch SE 3 with `-Osize`, whole-module optimization, and dead-code stripping. Notes queue offline and retry when the app comes back to the foreground.
+- **Watch app**: one SwiftUI file, watch-only (no iPhone app), no assets or dependencies. It builds for watchOS 26 / Apple Watch SE 3 with `-Osize`, whole-module optimization, and dead-code stripping. It works on a watch on its own, with no iPhone nearby, over the watch's Wi-Fi or cellular. Notes queue offline and retry when the app comes back to the foreground, and a note still sending when you lower your wrist gets a little extra time to finish.
 - **Plugin** (`plugin/`): a Claude Code plugin around one Node file with zero dependencies, plus the `handoff` terminal command (`plugin/cli/`). It decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
 - **Privacy**: notes are end-to-end encrypted on the watch with a per-device key (stored in the Keychain). The relay only sees ciphertext on a random topic.
 
