@@ -79,7 +79,8 @@ if (cmd === 'start') {
                             running handoff start in the one you pick
   handoff mail [address]    Email Claude too: notes you email yourself at you+claude@…
                             go to your handoff start sessions, and the summary comes back
-                            as a reply. Uses the Mail app; keep this running
+                            as a reply. Uses the Mail app; keep this running. Only that
+                            one account is listened to, and it's remembered for next time
   handoff install           Put this command on your PATH (/handoff:setup in Claude Code
                             runs it). It always runs the plugin's current version
 `)
@@ -357,7 +358,15 @@ async function mail(arg) {
     console.error('`handoff mail` uses the Mail app, so it only runs on a Mac.')
     process.exit(1)
   }
+  if (arg === '--help' || arg === '-h') {
+    return console.log('handoff mail [address]   listen for notes you email from that Mail account to its +claude address.\n' +
+      '                         The address is remembered, so next time plain `handoff mail` uses it.')
+  }
+  // The account to listen to: the one given (remembered for next time), the remembered one,
+  // or else the only Gmail account in Mail.
+  const SAVED = path.join(DIR, 'mail.json')
   let me = arg?.toLowerCase()
+  if (!me) try { me = JSON.parse(fs.readFileSync(SAVED, 'utf8')).address } catch {}
   if (!me) {
     let addrs
     try { addrs = await osa(['accounts']) } catch (e) { console.error(`Mail: ${e.message}`); process.exit(1) }
@@ -373,6 +382,7 @@ async function mail(arg) {
   me = `${user.split('+')[0]}@${domain}`
   const to = `${user.split('+')[0]}+claude@${domain}`
   fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
+  if (arg) writeAtomic(SAVED, JSON.stringify({ address: me }, null, 2))
 
   const save = m => {
     const text = mailText(m.subject, m.content).slice(0, 20000)

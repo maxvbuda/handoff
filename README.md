@@ -62,10 +62,10 @@ When you get home, the work is done. Claude calls `watch_note_done` with a summa
 You can also email Claude, from your phone, a school computer, or anywhere you have Gmail. It uses the Mail app on your Mac, so you don't need a Google Script or any new account permissions. Your email account just has to be set up in Mail.
 
 ```sh
-handoff mail              # or: handoff mail you@gmail.com
+handoff mail you@icloud.com   # any account in Mail; remembered, so next time just: handoff mail
 ```
 
-Keep it running next to a `handoff start` session. Then send an email from your own account to **you+claude@gmail.com**. The subject and body are the note, and the session works on it like a note from the watch. When Claude is done, the summary comes back as a reply in the same thread from "Claude (Handoff)". Reply to that to send the next note.
+With no address the first time, it uses your Gmail account if Mail has exactly one. It only listens to that one account. Keep it running next to a `handoff start` session. Then send an email from that account to its +claude address, like **you+claude@icloud.com**. The subject and body are the note, and the session works on it like a note from the watch. When Claude is done, the summary comes back as a reply in the same thread from "Claude (Handoff)". Reply to that to send the next note.
 
 - Only emails you sent count. `handoff mail` reads them from your account's **Sent** mailbox, so nobody else can email Claude instructions, even by faking your address.
 - Quoted text from earlier in the thread and your signature are left out of the note.

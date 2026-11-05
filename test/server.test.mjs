@@ -692,15 +692,26 @@ describe('mail command (email Claude through the Mail app)', () => {
     assert.equal(fs.readdirSync(path.join(dir, 'notes')).filter(f => f.startsWith('mail-') && f.endsWith('.json')).length, 3)
   })
 
-  test('asks which address when Mail has no single Gmail account', async () => {
-    const p = spawn(process.execPath, [CLI, 'mail'], { env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir,
-      CLAUDE_WATCH_NOTES_OSASCRIPT: new URL('./fake-osascript.mjs', import.meta.url).pathname,
-      FAKE_MAIL: (fs.writeFileSync(path.join(dir, 'two.json'), JSON.stringify({ accounts: ['a@gmail.com', 'b@gmail.com'], sent: [] })), path.join(dir, 'two.json')) } })
-    let err = ''
-    p.stderr.on('data', d => { err += d })
-    const code = await new Promise(r => p.on('exit', r))
-    assert.equal(code, 1)
-    assert.match(err, /handoff mail <address>[\s\S]*a@gmail\.com, b@gmail\.com/)
+  test('asks which address when Mail has no single Gmail account, then remembers the one given', async () => {
+    const fresh = tmpDir(), two = path.join(fresh, 'two.json')
+    fs.writeFileSync(two, JSON.stringify({ accounts: ['a@gmail.com', 'b@gmail.com', 'me@icloud.com'], sent: [] }))
+    const env = { ...process.env, CLAUDE_WATCH_NOTES_DIR: fresh, CLAUDE_WATCH_NOTES_MAIL_MS: '150',
+      CLAUDE_WATCH_NOTES_OSASCRIPT: new URL('./fake-osascript.mjs', import.meta.url).pathname, FAKE_MAIL: two }
+    const run = (args, ms) => new Promise(r => {
+      const p = spawn(process.execPath, [CLI, 'mail', ...args], { env })
+      spawned.add(p)
+      let text = ''
+      p.stdout.on('data', d => { text += d }); p.stderr.on('data', d => { text += d })
+      const t = ms && setTimeout(() => p.kill('SIGTERM'), ms)
+      p.on('exit', code => { clearTimeout(t); r({ code, text }) })
+    })
+    let r = await run([])
+    assert.equal(r.code, 1)
+    assert.match(r.text, /handoff mail <address>[\s\S]*a@gmail\.com, b@gmail\.com, me@icloud\.com/)
+    r = await run(['Me@iCloud.com'], 600)
+    assert.match(r.text, /email me\+claude@icloud\.com from me@icloud\.com/)
+    r = await run([], 600) // remembered
+    assert.match(r.text, /email me\+claude@icloud\.com from me@icloud\.com/)
   })
 })
 
