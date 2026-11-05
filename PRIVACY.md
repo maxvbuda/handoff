@@ -67,4 +67,4 @@ Unpair in the app, delete the app, and delete `~/.claude-watch-notes/` on your M
 
 ## Contact
 
-Questions: open an issue at https://github.com/maxvbuda/claude-watch-notes-mcp/issues.
+Questions: open an issue at https://github.com/maxvbuda/handoff/issues.

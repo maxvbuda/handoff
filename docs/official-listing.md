@@ -10,7 +10,7 @@ So there's no form to fill in. The route is to make Handoff easy to say yes to, 
 
 ## Plan
 
-1. **Publish the repo** on GitHub as `maxvbuda/claude-watch-notes-mcp`. The plugin manifest, privacy policy, and install commands already point there.
+1. **Publish the repo** on GitHub as `maxvbuda/handoff`. The plugin manifest, privacy policy, and install commands already point there.
 2. **Submit to the plugin directory** at claude.ai/directory/manage. This needs a paid Claude plan. It works in `/loop` mode with no warnings, and it gets the plugin an Anthropic quality and security review, which is a useful track record. Draft text is below.
 3. **Open a feature request** on [anthropics/claude-code](https://github.com/anthropics/claude-code/issues) asking for a path for community channels to be allowlisted, with Handoff as the concrete example. Draft is below.
 4. **Ship the watch app** on the App Store, so there are real users to point to.
@@ -43,7 +43,7 @@ Handoff turns your Apple Watch into a distraction-free inbox for Claude Code. Di
 **Title:** Channels: a path for community channel plugins to be allowlisted
 
 **Body:**
-I built [Handoff](https://github.com/maxvbuda/claude-watch-notes-mcp), a channel plugin that lets you send ideas from an Apple Watch app to a running Claude Code session. The note shows up in the session and Claude starts on it while you're away.
+I built [Handoff](https://github.com/maxvbuda/handoff), a channel plugin that lets you send ideas from an Apple Watch app to a running Claude Code session. The note shows up in the session and Claude starts on it while you're away.
 
 Right now every user has to start Claude Code with `--dangerously-load-development-channels`, and the warning screen understandably scares people off. The docs say `claude-plugins-official` doesn't take submissions and the community marketplace isn't on the channel allowlist, so there's no route to approval for an independent developer.
 
@@ -51,4 +51,4 @@ Could there be a review path for community channels? For example, a security rev
 
 ## Draft: note to an Anthropic contact
 
-> Hi! I built Handoff, an open-source Claude Code channel plugin plus an Apple Watch app: you jot ideas on your wrist and they land in your running Claude Code session. It's built to the channels reference (end-to-end encrypted sender gating, pairing code, no permission relay, zero deps, strict validation and tests). Right now users need `--dangerously-load-development-channels`, which scares people off. Would you consider it for `claude-plugins-official`, or point me to the right person? Repo: https://github.com/maxvbuda/claude-watch-notes-mcp
+> Hi! I built Handoff, an open-source Claude Code channel plugin plus an Apple Watch app: you jot ideas on your wrist and they land in your running Claude Code session. It's built to the channels reference (end-to-end encrypted sender gating, pairing code, no permission relay, zero deps, strict validation and tests). Right now users need `--dangerously-load-development-channels`, which scares people off. Would you consider it for `claude-plugins-official`, or point me to the right person? Repo: https://github.com/maxvbuda/handoff

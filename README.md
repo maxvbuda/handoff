@@ -15,11 +15,11 @@ Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plu
 **1. Install the plugin** (in Claude Code):
 
 ```
-/plugin marketplace add maxvbuda/claude-watch-notes-mcp
+/plugin marketplace add maxvbuda/handoff
 /plugin install handoff@handoff
 ```
 
-**2. Get the `handoff` command**: it comes with the plugin. In Claude Code, run `/handoff:setup` once. It puts `handoff` in `~/.local/bin` and keeps it pointed at the current version when the plugin updates. (`npm install -g github:maxvbuda/claude-watch-notes-mcp` still works too.)
+**2. Get the `handoff` command**: it comes with the plugin. In Claude Code, run `/handoff:setup` once. It puts `handoff` in `~/.local/bin` and keeps it pointed at the current version when the plugin updates. (`npm install -g github:maxvbuda/handoff` still works too.)
 
 **3. Install the watch app**: from the App Store, or build it yourself: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
 
