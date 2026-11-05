@@ -110,6 +110,7 @@ function sendToSimulators(code) {
 //   - announces its projects and chats on "<topic>-c", sealed, every minute;
 //   - answers {ls, id} requests on "<topic>-n" with {ls, id, dirs} on "<topic>-l" (folder browsing);
 //   - registers a chat for {path, name, create?} requests, and opens a Terminal window showing its log;
+//   - for {open} requests, opens that chat as a normal Claude Code window in Terminal (claude --resume);
 //   - takes notes addressed to its chats from the main topic and runs them, one at a time per chat.
 // Paths are relative to `root`; anything that resolves outside it (.., symlinks) is refused.
 function host(root) {
@@ -195,6 +196,7 @@ function host(root) {
     try { req = open(ev.message, key) } catch { return } // not from our watch
     if (!(Date.now() - Date.parse(req.ts) < 10 * 60_000)) return console.log('Skipped an old request.')
     if (req.ls !== undefined) listFolder(req)
+    else if (req.open !== undefined) openChat(req)
     else startChat(req)
   })
 
@@ -243,17 +245,46 @@ function host(root) {
     announce()
     console.log(`Started chat "${name}" in ${dir}  (open it: ${resumeCommand(chat)})`)
     logTo(name, `Chat "${name}" in ${dir}\nTo open it as a normal Claude Code window: ${resumeCommand(chat)}\nWaiting for notes from your watch…\n`)
-    // A Terminal window that shows this chat's log as Claude works. Every value is single-quoted.
-    const script = [
-      '#!/bin/sh',
-      'rm -f "$0"',
-      `printf '\\033]0;%s\\007' ${q(`Handoff: ${name}`)}`,
-      `exec tail -n +1 -F ${q(logFile(name))}`,
-    ].join('\n') + '\n'
+    // A Terminal window that shows this chat's log as Claude works.
+    const script = terminalScript(`Handoff: ${name}`, [`exec tail -n +1 -F ${q(logFile(name))}`])
     if (dryRun) return console.log(`LAUNCH ${JSON.stringify({ dir, name, session: chat.session, script })}`)
+    openTerminal(script)
+  }
+
+  // "Open on computer" on the watch: the chat as a normal Claude Code window, continuing its
+  // conversation. A chat that hasn't run a note yet has no conversation, so that opens a new one there.
+  function openChat(req) {
+    const name = String(req.open)
+    const chat = chats[name]
+    if (!chat || !inside(path.relative(root, chat.dir))) return console.log('Skipped a request to open a chat this host doesn\'t have.')
+    const claude = whichClaude()
+    const script = terminalScript(`Claude: ${name}`, [
+      `cd ${q(chat.dir)} || exit 1`,
+      chat.started ? `exec ${q(claude)} --resume ${q(chat.session)}` : `exec ${q(claude)}`,
+    ])
+    console.log(`Opening chat "${name}" in Terminal`)
+    logTo(name, `━━ Opened in Terminal on this Mac.${chat.started ? '' : ' (No notes yet, so that window is a new conversation.)'}\n`)
+    if (dryRun) return console.log(`OPEN ${JSON.stringify({ dir: chat.dir, name, session: chat.session, script })}`)
+    openTerminal(script)
+  }
+
+  // A one-shot Terminal script: deletes itself, sets the window title, runs `lines`. Values are single-quoted.
+  function terminalScript(title, lines) {
+    return ['#!/bin/sh', 'rm -f "$0"', `printf '\\033]0;%s\\007' ${q(title)}`, ...lines].join('\n') + '\n'
+  }
+  function openTerminal(script) {
     const file = path.join(os.tmpdir(), `handoff-${crypto.randomUUID()}.command`)
     fs.writeFileSync(file, script, { mode: 0o700 })
     execFile('open', ['-a', 'Terminal', file], e => { if (e) console.error(`Couldn't open Terminal: ${e.message}`) })
+  }
+  // Terminal windows may not have the same PATH as this one, so use the full path to claude.
+  function whichClaude() {
+    const c = process.env.CLAUDE_WATCH_NOTES_CLAUDE || 'claude'
+    if (c.includes('/')) return c
+    for (const d of (process.env.PATH || '').split(path.delimiter)) {
+      try { fs.accessSync(path.join(d, c), fs.constants.X_OK); return path.join(d, c) } catch {}
+    }
+    return c
   }
 
   // Running notes: one at a time per chat, each continuing the chat's Claude Code session.

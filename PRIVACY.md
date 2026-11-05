@@ -24,6 +24,7 @@ Handoff has two parts: an Apple Watch app and a Claude Code plugin that runs on 
 If you run `handoff host` on your Mac, the watch can start new chats:
 
 - It sends the watch the names of the folders inside the folder you gave it, encrypted, so you can browse them. Only folder names are sent, never file names or file contents.
+- **Open on computer** opens one of the host's chats in a Terminal window on your Mac (`claude --resume`). The request only carries the chat's name.
 - When you pick a folder on the watch, it registers a chat there. If you ask for a new folder, it creates that empty folder first. It can't reach anything outside the folder you gave it.
 - Each note you send to that chat is run by Claude Code on your Mac (`claude -p`) in that folder, under your Anthropic account, like the rest of Handoff. A log of what Claude did is saved in `~/.claude-watch-notes/logs/`, and the list of chats in `~/.claude-watch-notes/host-chats.json`. Neither leaves your Mac.
 
@@ -45,7 +46,7 @@ All of it is encrypted with your key, so ntfy.sh can't read any of it:
 | `cw-…` | watch → Mac | your notes, and the chat each is for |
 | `cw-…-s` | Mac → watch | Claude's suggested next prompt |
 | `cw-…-c` | Mac → watch | open chat names; the host's chat names and top-level folder names |
-| `cw-…-n` | watch → Mac | requests to the host: list a folder, start a chat, make a folder |
+| `cw-…-n` | watch → Mac | requests to the host: list a folder, start a chat, make a folder, open a chat on the Mac |
 | `cw-…-l` | Mac → watch | subfolder names, in reply to a list request |
 
 ## How long data is kept

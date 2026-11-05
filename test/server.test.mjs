@@ -549,6 +549,22 @@ describe('host command (new chats from the watch)', () => {
     assert.ok(!fs.existsSync(path.join(root, 'pwned')))
     assert.deepEqual((await announced()).at(-1).chats.sort(), [evil, 'deep', 'made-on-watch'].sort())
 
+    // "Open on computer": only chats this host has, never stale or forged requests. A chat that
+    // hasn't run a note yet opens a new conversation in its folder; every value is quoted.
+    await ask({ open: 'not a chat' })
+    await ask({ open: 'deep', ts: new Date(Date.now() - 11 * 60_000).toISOString() })
+    await ask({ open: 'deep' }, crypto.randomBytes(32))
+    await ask({ open: evil })
+    end = Date.now() + 5000
+    while (!/^OPEN /m.test(out) && Date.now() < end) await sleep(50)
+    await sleep(300)
+    const opens = [...out.matchAll(/^OPEN (.*)$/gm)].map(m => JSON.parse(m[1]))
+    assert.deepEqual(opens.map(o => o.name), [evil], out)
+    assert.match(out, /Skipped a request to open a chat this host doesn't have/)
+    assert.match(opens[0].script, new RegExp(`\ncd '${path.join(root, 'website').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' \\|\\| exit 1\nexec '[^']+'\n$`))
+    const openTitle = opens[0].script.match(/^printf '\\033\]0;%s\\007' (.*)$/m)[1]
+    assert.equal(execFileSync('/bin/sh', ['-c', `printf %s ${openTitle}`], { cwd: root }).toString(), `Claude: ${evil}`)
+
     h.kill('SIGTERM'); await new Promise(r => h.on('exit', r))
     assert.equal((await announced()).at(-1).gone, true)
   })
@@ -594,6 +610,12 @@ describe('host command (new chats from the watch)', () => {
     assert.match(log, /Note from your watch:\n-rf make a todo app/)
     assert.match(log, /→ Bash \{"command":"ls"\}/)
     assert.match(log, new RegExp(`claude --resume ${session}`))
+
+    // Opening it on the computer continues the same conversation.
+    await post(`${cfg.topicURL}-n`, seal({ ts: new Date().toISOString(), open: 'web' }, cfg.key))
+    await until(() => /^OPEN /m.test(out), 'open')
+    const opened = JSON.parse(out.match(/^OPEN (.*)$/m)[1])
+    assert.match(opened.script, new RegExp(`\nexec '[^']*fake-claude\\.mjs' --resume '${session}'\n$`))
 
     // Failures are recorded, and the chat survives a host restart (it keeps resuming the session).
     const bad = note('FAIL please', { to: 'web' })

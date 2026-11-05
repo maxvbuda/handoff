@@ -85,6 +85,8 @@ final class Store {
     private(set) var chats: [String] = []
     /// Projects `handoff host` can start a new chat in (empty when it isn't running).
     private(set) var projects: [String] = []
+    /// Chats `handoff host` runs, which it can open on the Mac (Open on computer).
+    private(set) var hostedChats: Set<String> = []
     /// The name of the host's folder (shown as the top of the folder browser).
     private(set) var hostRoot: String?
     /// Chats we asked the host to start that haven't announced themselves yet.
@@ -173,6 +175,7 @@ final class Store {
         let sorted = open.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         if sorted != chats { chats = sorted }
         if hostProjects != projects { projects = hostProjects }
+        if Set(hostChats) != hostedChats { hostedChats = Set(hostChats) }
         starting.subtract(open)
     }
 
@@ -224,6 +227,14 @@ final class Store {
         return true
     }
 
+    /// Asks `handoff host` to open one of its chats on the Mac, as a normal Claude Code window in
+    /// Terminal that continues the conversation. Returns false if the request couldn't be sent.
+    func openOnComputer(_ name: String) async -> Bool {
+        guard hostedChats.contains(name), await askHost(["open": name]) else { return false }
+        WKInterfaceDevice.current().play(.success)
+        return true
+    }
+
     /// Decrypts a relay poll response, oldest first, skipping anything not sealed with our key.
     private static func messages(in data: Data, key: SymmetricKey) -> [(id: String, body: BackMessage)] {
         data.split(separator: UInt8(ascii: "\n")).compactMap { line in
@@ -256,6 +267,7 @@ final class Store {
         suggestion = nil
         chats = []
         projects = []
+        hostedChats = []
         starting = []
         target = nil
         defaults.removeObject(forKey: "suggestionSince")
@@ -458,6 +470,7 @@ struct EditorView: View {
     @State private var line = ""
     @State private var showSettings = false
     @State private var showNewChat = false
+    @State private var opened: String? // what Open on computer did, shown for a moment
     private let accent = Color(red: 0.85, green: 0.47, blue: 0.34)
 
     var body: some View {
@@ -485,6 +498,19 @@ struct EditorView: View {
                     }
                 }
                 .pickerStyle(.navigationLink)
+            }
+            // A chat `handoff host` runs can be opened on the Mac, as a normal Claude Code window.
+            if let chat = store.target, store.hostedChats.contains(chat) {
+                Button {
+                    Task {
+                        opened = await store.openOnComputer(chat) ? "Opened on your Mac" : "Couldn't reach your Mac"
+                        try? await Task.sleep(for: .seconds(4))
+                        opened = nil
+                    }
+                } label: {
+                    Label(opened ?? "Open on computer", systemImage: "desktopcomputer")
+                }
+                .disabled(opened != nil)
             }
             if !store.projects.isEmpty {
                 Button { showNewChat = true } label: { Label("New chat", systemImage: "plus.bubble") }
