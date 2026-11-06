@@ -188,10 +188,18 @@ function host(root) {
   }
   announce()
 
-  // Requests from the watch: only ones made from now on.
+  // Requests from the watch: only ones made from now on. `since` is in whole seconds, so a restart
+  // can replay a request from earlier that second; remembering handled ids stops it running twice
+  // (which would start the chat over in a new conversation).
   let reqSince = String(Math.floor(Date.now() / 1000))
+  const HANDLED = path.join(DIR, 'host-requests.json')
+  let handled = []
+  try { handled = JSON.parse(fs.readFileSync(HANDLED, 'utf8')) } catch {}
   subscribe('-n', () => reqSince, (ev, key) => {
     reqSince = ev.id
+    if (handled.includes(ev.id)) return
+    handled = [...handled, ev.id].slice(-50)
+    try { writeAtomic(HANDLED, JSON.stringify(handled)) } catch {}
     let req
     try { req = open(ev.message, key) } catch { return } // not from our watch
     if (!(Date.now() - Date.parse(req.ts) < 10 * 60_000)) return console.log('Skipped an old request.')

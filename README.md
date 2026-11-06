@@ -1,6 +1,6 @@
 # Handoff for Claude Code
 
-[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-2.2.2-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
+[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-2.2.3-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
 
 Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only thing that comes back is Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**.
 

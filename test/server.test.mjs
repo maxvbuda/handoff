@@ -631,6 +631,7 @@ describe('host command (new chats from the watch)', () => {
     await until(() => saved(later.id).status === 'done', 'note after restart')
     const last = ran().at(-1)
     assert.equal(last.args[last.args.indexOf('--resume') + 1], session)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'host-chats.json'), 'utf8')).web.session, session) // a replayed request didn't start it over
     assert.equal(ran().filter(r => r.prompt.includes(first.id)).length, 1) // nothing re-run after the restart
     h.kill('SIGTERM'); await new Promise(r => h.on('exit', r))
   })

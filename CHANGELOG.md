@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.3 (2026-11-05)
+
+- `handoff host` no longer starts a chat over (in a new conversation) when it restarts within a second of a request from the watch.
+
 ## 2.2.2 (2026-11-05)
 
 - **Open on computer:** a button on the watch opens a host chat in a Terminal window on your Mac.
