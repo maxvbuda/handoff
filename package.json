@@ -16,5 +16,10 @@
   "scripts": {
     "test": "node --test test/server.test.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "handoff",
+    "claude-code",
+    "apple-watch"
+  ]
 }
