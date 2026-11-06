@@ -10,7 +10,7 @@ npm install -g github:maxvbuda/handoff
 
 The skills run that command. `handoff start` opens a Claude Code session with Handoff's server as a channel, and that server receives your watch's end-to-end encrypted notes and hands them to Claude. The watch app, the command's source and full docs live in the [repository](https://github.com/maxvbuda/handoff).
 
-- `/handoff:setup`: check that the `handoff` command is installed
+- `/handoff:setup`: install the `handoff` command (runs the npm command above, after asking)
 - `/handoff:pair`: pair your watch
 - `/handoff:inbox`: work on pending ideas (or `/loop 5m /handoff:inbox` without channels)
 - `handoff start`: open a session that receives ideas instantly (channel mode)

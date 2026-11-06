@@ -3,7 +3,7 @@
 ## 3.0.0 (2026-11-06)
 
 - **The `handoff` command is now installed with npm**, separately from the Claude Code plugin: `npm install -g github:maxvbuda/handoff`. The plugin is skills only, with no code, which is what the Claude plugin directory needs.
-- `/handoff:setup` checks that the command is installed instead of installing it.
+- `/handoff:setup` installs the command with npm if it's missing (Claude Code asks you first).
 - **Upgrading:** run `npm install -g github:maxvbuda/handoff`. If `/handoff:setup` put a `handoff` in `~/.local/bin`, delete it (`rm ~/.local/bin/handoff`), or it will run instead and stop working.
 
 ## 2.3.0 (2026-11-05)
