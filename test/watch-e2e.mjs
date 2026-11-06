@@ -12,7 +12,7 @@ import path from 'node:path'
 import { startMock } from './mock-ntfy.mjs'
 
 const ROOT = new URL('..', import.meta.url).pathname
-const SERVER = path.join(ROOT, 'plugin/server/handoff.mjs')
+const SERVER = path.join(ROOT, 'server/handoff.mjs')
 const args = process.argv.slice(2)
 const REAL = args.includes('--real-relay')
 const SIM = args.find(a => !a.startsWith('--')) || 'EB3AEAD7-06BA-439B-B2F0-B6F22A2F825F' // Apple Watch SE 3 (40mm)
@@ -39,7 +39,7 @@ server.stdout.on('data', d => {
 // `handoff host` in dry-run mode: records which chats the watch asks it to start.
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-e2e-root-')))
 fs.mkdirSync(path.join(root, 'e2e-project/sub'), { recursive: true })
-const host = spawn(process.execPath, [path.join(ROOT, 'plugin/cli/handoff.mjs'), 'host', root], { env: { ...env, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1' } })
+const host = spawn(process.execPath, [path.join(ROOT, 'cli/handoff.mjs'), 'host', root], { env: { ...env, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1' } })
 let hostOut = ''
 host.stdout.on('data', d => { hostOut += d })
 

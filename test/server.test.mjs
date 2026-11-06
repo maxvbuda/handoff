@@ -1,4 +1,4 @@
-// End-to-end tests for plugin/server/handoff.mjs against a mock ntfy relay.
+// End-to-end tests for server/handoff.mjs against a mock ntfy relay.
 // Run: node --test test/
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -9,7 +9,7 @@ import path from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { startMock } from './mock-ntfy.mjs'
 
-const SERVER = new URL('../plugin/server/handoff.mjs', import.meta.url).pathname
+const SERVER = new URL('../server/handoff.mjs', import.meta.url).pathname
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // ---- the watch side, mirroring App.swift (CryptoKit AES.GCM combined, base64) ----
@@ -477,7 +477,7 @@ describe('sessions, restarts and the network', () => {
 })
 
 describe('host command (new chats from the watch)', () => {
-  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
+  const CLI = new URL('../cli/handoff.mjs', import.meta.url).pathname
   test('lists projects, opens only listed ones, ignores stale/forged requests, quotes names safely', async () => {
     const dir = tmpDir(); const cfg = pairDir(dir)
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-root-')))
@@ -638,7 +638,7 @@ describe('host command (new chats from the watch)', () => {
 })
 
 describe('mail command (email Claude through the Mail app)', () => {
-  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
+  const CLI = new URL('../cli/handoff.mjs', import.meta.url).pathname
   let dir, s, mailbox, log, failFile, h, out
   const box = () => JSON.parse(fs.readFileSync(mailbox, 'utf8'))
   const send = m => fs.writeFileSync(mailbox, JSON.stringify({ ...box(), sent: [...box().sent, { to: 'me+claude@gmail.com', at: new Date().toISOString(), ...m }] }))
@@ -738,42 +738,6 @@ describe('mail command (email Claude through the Mail app)', () => {
   })
 })
 
-describe('install command (the handoff command from the plugin)', () => {
-  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
-  const run = (file, args, env) => new Promise(r => {
-    const p = spawn(file, args, { env })
-    let out = ''
-    p.stdout.on('data', d => { out += d }); p.stderr.on('data', d => { out += d })
-    p.on('exit', code => r({ code, out }))
-  })
-
-  test('installs a command that follows the plugin to its newest version', async () => {
-    const home = tmpDir(), dir = path.join(home, 'data')
-    const env = { ...process.env, HOME: home, CLAUDE_WATCH_NOTES_DIR: dir, PATH: `${path.join(home, '.local', 'bin')}:${path.dirname(process.execPath)}:/usr/bin:/bin` }
-    let r = await run(process.execPath, [CLI, 'install'], env)
-    assert.equal(r.code, 0, r.out)
-    const shim = path.join(home, '.local', 'bin', 'handoff')
-    r = await run(shim, [], env)
-    assert.match(r.out, /handoff pair/)
-
-    // A plugin update puts a new version in Claude Code's plugin cache; the newest one runs (10.0.0 > 9.0.0).
-    const cache = path.join(home, '.claude', 'plugins', 'cache', 'handoff', 'handoff')
-    for (const v of ['9.0.0', '10.0.0']) {
-      fs.cpSync(path.dirname(path.dirname(CLI)), path.join(cache, v), { recursive: true })
-      fs.appendFileSync(path.join(cache, v, 'cli', 'handoff.mjs'), `\nif (process.argv[2] === 'whoami') console.log('v${v}')\n`)
-    }
-    r = await run(shim, ['whoami'], env)
-    assert.match(r.out, /v10\.0\.0/)
-
-    // Running it again is fine; someone else's file with that name is left alone.
-    assert.equal((await run(process.execPath, [CLI, 'install'], env)).code, 0)
-    fs.writeFileSync(shim, '#!/bin/sh\necho mine\n')
-    r = await run(process.execPath, [CLI, 'install'], env)
-    assert.equal(r.code, 1); assert.match(r.out, /left alone/)
-    assert.equal(fs.readFileSync(shim, 'utf8'), '#!/bin/sh\necho mine\n')
-  })
-})
-
 describe('pair command', () => {
   const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
   const code = () => Array.from({ length: 8 }, () => ALPHABET[crypto.randomInt(31)]).join('')
@@ -857,7 +821,7 @@ describe('pair command', () => {
 })
 
 describe('inbox and done commands (/handoff:inbox without the plugin running a server)', () => {
-  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
+  const CLI = new URL('../cli/handoff.mjs', import.meta.url).pathname
   const run = (args, env) => new Promise(r => {
     const p = spawn(process.execPath, [CLI, ...args], { env })
     spawned.add(p)

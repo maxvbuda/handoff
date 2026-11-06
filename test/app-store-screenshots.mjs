@@ -11,8 +11,8 @@ import path from 'node:path'
 import { startMock } from './mock-ntfy.mjs'
 
 const ROOT = new URL('..', import.meta.url).pathname
-const SERVER = path.join(ROOT, 'plugin/server/handoff.mjs')
-const CLI = path.join(ROOT, 'plugin/cli/handoff.mjs')
+const SERVER = path.join(ROOT, 'server/handoff.mjs')
+const CLI = path.join(ROOT, 'cli/handoff.mjs')
 const OUT = path.join(ROOT, 'docs/app-store/screenshots')
 const BUNDLE = 'dev.maxbuda.ClaudeNotes'
 const TYPES = process.argv.slice(2).length ? process.argv.slice(2)

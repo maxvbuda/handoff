@@ -1,8 +1,8 @@
 {
   "name": "handoff",
   "displayName": "Handoff",
-  "version": "2.3.0",
-  "description": "Jot ideas on your Apple Watch and Claude Code works on them while you're away. Notes are end-to-end encrypted; only an optional one-line suggestion comes back to the watch.",
+  "version": "3.0.0",
+  "description": "Jot ideas on your Apple Watch and Claude Code works on them while you're away. Skills for the open-source handoff command (installed separately with npm). Notes are end-to-end encrypted.",
   "author": {
     "name": "Max Buda",
     "url": "https://github.com/maxvbuda"

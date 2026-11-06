@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0 (2026-11-06)
+
+- **The `handoff` command is now installed with npm**, separately from the Claude Code plugin: `npm install -g github:maxvbuda/handoff`. The plugin is skills only, with no code, which is what the Claude plugin directory needs.
+- `/handoff:setup` checks that the command is installed instead of installing it.
+- **Upgrading:** run `npm install -g github:maxvbuda/handoff`. If `/handoff:setup` put a `handoff` in `~/.local/bin`, delete it (`rm ~/.local/bin/handoff`), or it will run instead and stop working.
+
 ## 2.3.0 (2026-11-05)
 
 - The plugin no longer declares an MCP server. `handoff start` runs Handoff's server for the session it opens, the same way as before, so nothing changes in how you use it. This is what the Claude plugin directory requires of plugins from developers who aren't a verified organization.

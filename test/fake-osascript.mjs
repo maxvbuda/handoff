@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stands in for `osascript -l JavaScript plugin/cli/mail.js` in mail tests. The mailbox is a JSON file
+// Stands in for `osascript -l JavaScript cli/mail.js` in mail tests. The mailbox is a JSON file
 // ({ accounts, sent: [{ messageId, subject, at, content, to }] }); replies are appended to a log,
 // and the next FAKE_MAIL_FAIL replies fail.
 import fs from 'node:fs'

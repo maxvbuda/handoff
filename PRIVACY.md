@@ -2,7 +2,7 @@
 
 _Last updated: November 5, 2026_
 
-Handoff has two parts: an Apple Watch app and a Claude Code plugin that runs on your own Mac. The developer runs no servers and collects no data.
+Handoff has three parts: an Apple Watch app, the `handoff` command that runs on your own Mac, and a Claude Code plugin with skills that run that command. The developer runs no servers and collects no data.
 
 ## What the watch app does with your notes
 
@@ -15,7 +15,7 @@ Handoff has two parts: an Apple Watch app and a Claude Code plugin that runs on 
 
 - It downloads your encrypted notes from the relay, decrypts them, and saves them in `~/.claude-watch-notes/` on your Mac.
 - It passes each note to your Claude Code session. Claude Code then processes it under your Anthropic account, like anything you type into Claude Code. See [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
-- When Claude finishes a note, it records a short summary with the plugin's `watch_note_done` tool. The summary is saved in the same place, on your Mac only, and is never sent to the relay or anywhere else (except for notes you emailed; see below).
+- When Claude finishes a note, it records a short summary with Handoff's `watch_note_done` tool. The summary is saved in the same place, on your Mac only, and is never sent to the relay or anywhere else (except for notes you emailed; see below).
 - Claude can also include a one-line suggested next prompt. It's encrypted with the same key and sent through the relay to the watch, which shows it with an **Accept suggestion** button. Claude's response itself is never sent to the watch.
 - Each Claude Code session started with `handoff start` sends the watch its chat name (your folder's name, or one you choose) about once a minute, encrypted, so the watch can list open chats. Notes you address to a chat carry that name too.
 

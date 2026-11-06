@@ -1,6 +1,6 @@
 # Handoff for Claude Code
 
-[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-2.3.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
+[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-3.0.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
 
 Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only thing that comes back is Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**.
 
@@ -9,19 +9,24 @@ Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plu
 ```
 
 - **Watch app**: one SwiftUI file, watch-only (no iPhone app), no assets or dependencies. It builds for watchOS 26 / Apple Watch SE 3 with `-Osize`, whole-module optimization, and dead-code stripping. It works on a watch on its own, with no iPhone nearby, over the watch's Wi-Fi or cellular. Notes queue offline and retry when the app comes back to the foreground, and a note still sending when you lower your wrist gets a little extra time to finish.
-- **Plugin** (`plugin/`): a Claude Code plugin with zero dependencies: skills, the `handoff` terminal command (`plugin/cli/`), and one Node file for the server (`plugin/server/`). The plugin doesn't declare the server itself; `handoff start` runs it for the session it opens. It decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
+- **`handoff` command** (`cli/`, `server/`): plain Node with zero dependencies, installed with npm. `handoff start` runs Handoff's server for the Claude Code session it opens. The server decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
+- **Plugin** (`plugin/`): skills only (`/handoff:setup`, `/handoff:pair`, `/handoff:inbox`), with no code. They run the `handoff` command, which you install separately.
 - **Privacy**: notes are end-to-end encrypted on the watch with a per-device key (stored in the Keychain). The relay only sees ciphertext on a random topic.
 
 ## Setup
 
-**1. Install the plugin** (in Claude Code):
+**1. Install the `handoff` command** (in Terminal; needs Node.js 20 or newer):
+
+```sh
+npm install -g github:maxvbuda/handoff
+```
+
+**2. Install the plugin** (in Claude Code). It's optional but handy: it adds `/handoff:pair`, `/handoff:inbox` and `/handoff:setup`, which run the `handoff` command for you.
 
 ```
 /plugin marketplace add maxvbuda/handoff
 /plugin install handoff@handoff
 ```
-
-**2. Get the `handoff` command**: it comes with the plugin. In Claude Code, run `/handoff:setup` once. It puts `handoff` in `~/.local/bin` and keeps it pointed at the current version when the plugin updates. (`npm install -g github:maxvbuda/handoff` still works too.)
 
 **3. Install the watch app**: the App Store listing is being prepared ([docs/app-store](docs/app-store/README.md)), which is also the only way onto a watch in Family Setup. Until then, build it yourself: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
 
@@ -76,7 +81,7 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 
 ## Notes
 
-- ntfy.sh keeps messages for about 12 hours. The server saves them to disk as soon as they arrive, so this only matters if no Claude session is running for that whole time. To self-host ntfy, change `RELAY` in `plugin/server/handoff.mjs` and `Relay.base` in `App.swift`.
+- ntfy.sh keeps messages for about 12 hours. The server saves them to disk as soon as they arrive, so this only matters if no Claude session is running for that whole time. To self-host ntfy, change `RELAY` in `server/relay.mjs` and `Relay.base` in `App.swift`.
 - ntfy turns messages of 4 KB or more into file attachments, which ntfy.sh keeps for only about 3 hours. The server handles those, but a very long note (roughly 2,900+ characters) needs a session running within that window.
 
 ## Tests

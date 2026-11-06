@@ -163,7 +163,7 @@ function handle(msg) {
     return out({ id, result: {
       protocolVersion: params?.protocolVersion || '2025-06-18',
       capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
-      serverInfo: { name: 'handoff', version: '2.3.0' },
+      serverInfo: { name: 'handoff', version: '3.0.0' },
       instructions: INSTRUCTIONS,
     } })
   }

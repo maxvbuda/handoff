@@ -26,7 +26,7 @@ struct ClaudeNotesApp: App {
     }
 }
 
-/// Relay that carries ciphertext between watch and Mac. Must match RELAY in plugin/server/handoff.mjs.
+/// Relay that carries ciphertext between watch and Mac. Must match RELAY in server/handoff.mjs.
 enum Relay {
     #if targetEnvironment(simulator)
     // Tests point the simulator at a local mock relay with `-relay http://127.0.0.1:PORT`.

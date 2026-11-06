@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// `handoff`: terminal command for Handoff. The plugin itself declares no MCP server: this command
-// starts Handoff's server (server/handoff.mjs) for the Claude Code sessions it opens.
+// `handoff`: terminal command for Handoff, installed with npm (npm install -g github:maxvbuda/handoff).
+// The Claude Code plugin is skills only and runs this command; this command starts Handoff's server
+// (server/handoff.mjs) for the Claude Code sessions it opens.
 //
 //   handoff pair              pair your watch (shows a code to type on it)
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
@@ -8,7 +9,6 @@
 //   handoff mail [address]    email Claude too, through the Mail app
 //   handoff inbox             print notes that aren't done (what /handoff:inbox runs)
 //   handoff done <id> <summary> [--suggestion S]   mark a note done
-//   handoff install           put this command on your PATH (what /handoff:setup runs)
 
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -68,8 +68,6 @@ if (cmd === 'start') {
   host(path.resolve(rest[0] || process.cwd()))
 } else if (cmd === 'mail') {
   mail(rest[0])
-} else if (cmd === 'install') {
-  install()
 } else if (cmd === 'inbox') {
   toolCall('watch_inbox', {}, 3000)
 } else if (cmd === 'done') {
@@ -92,8 +90,6 @@ if (cmd === 'start') {
                             go to your handoff start sessions, and the summary comes back
                             as a reply. Uses the Mail app; keep this running. Only that
                             one account is listened to, and it's remembered for next time
-  handoff install           Put this command on your PATH (/handoff:setup in Claude Code
-                            runs it). It always runs the plugin's current version
   handoff inbox             Print the notes that aren't done yet (/handoff:inbox runs it)
   handoff done <note_id> <summary> [--suggestion "next prompt"]
                             Mark a note done (and send a suggestion to the watch)
@@ -520,55 +516,5 @@ async function mail(arg) {
     }
     await replies()
     await new Promise(r => setTimeout(r, Number(process.env.CLAUDE_WATCH_NOTES_MAIL_MS) || 60_000))
-  }
-}
-
-// ---------- install: put `handoff` on your PATH (/handoff:setup runs this) ----------
-// Writes a small script that runs the installed plugin's copy of this file. Plugin updates move the
-// plugin, so it looks the location up in ~/.claude-watch-notes/plugin-root, which the plugin's
-// server rewrites every time a Claude Code session starts.
-function install() {
-  const MARK = 'Installed by the Handoff plugin'
-  fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
-  writeAtomic(path.join(DIR, 'plugin-root'), path.dirname(path.dirname(fileURLToPath(import.meta.url))))
-  const home = os.homedir()
-  const onPath = (process.env.PATH || '').split(path.delimiter)
-  const local = path.join(home, '.local', 'bin')
-  const bin = [local, path.join(home, 'bin')].find(d => onPath.includes(d)) || local
-  const target = path.join(bin, 'handoff')
-  try {
-    if (!fs.readFileSync(target, 'utf8').includes(MARK)) {
-      console.error(`${target} already exists and isn't from Handoff, so it was left alone.`)
-      process.exit(1)
-    }
-  } catch {} // not there yet
-  fs.mkdirSync(bin, { recursive: true })
-  fs.writeFileSync(target, `#!/bin/sh
-# ${MARK} (/handoff:setup). Runs the installed plugin's \`handoff\` command.
-# The newest installed version of the plugin, else wherever /handoff:setup last ran from.
-cache="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/handoff/handoff"
-root=$(ls -1 "$cache" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-if [ -n "$root" ] && [ -f "$cache/$root/cli/handoff.mjs" ]; then root="$cache/$root"
-else root=$(cat "\${CLAUDE_WATCH_NOTES_DIR:-$HOME/.claude-watch-notes}/plugin-root" 2>/dev/null); fi
-if [ ! -f "$root/cli/handoff.mjs" ]; then
-  echo "handoff: can't find the Handoff plugin. In Claude Code, run /plugin install handoff@handoff, then /handoff:setup." >&2
-  exit 1
-fi
-exec node "$root/cli/handoff.mjs" "$@"
-`)
-  fs.chmodSync(target, 0o755)
-  console.log(`Installed the handoff command at ${target}.`)
-
-  if (!onPath.includes(bin)) {
-    const rc = path.join(home, process.env.SHELL?.endsWith('bash') ? '.bash_profile' : '.zshrc')
-    const line = 'export PATH="$HOME/.local/bin:$PATH" # added by Handoff'
-    let current = ''
-    try { current = fs.readFileSync(rc, 'utf8') } catch {}
-    if (!current.includes(line)) fs.appendFileSync(rc, `\n${line}\n`)
-    console.log(`Added ${bin} to your PATH in ${rc}. Open a new Terminal window to use it.`)
-  } else {
-    // Another `handoff` earlier in PATH (an old npm install, say) would run instead.
-    const first = onPath.slice(0, onPath.indexOf(bin)).map(d => path.join(d, 'handoff')).find(f => fs.existsSync(f))
-    if (first) console.log(`Note: ${first} comes first in your PATH and will run instead. Remove it to use this one.`)
   }
 }

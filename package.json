@@ -1,14 +1,14 @@
 {
   "name": "handoff",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "description": "Jot ideas on your Apple Watch; Claude Code works on them while you're away.",
   "type": "module",
   "bin": {
-    "handoff": "plugin/cli/handoff.mjs"
+    "handoff": "cli/handoff.mjs"
   },
   "files": [
-    "plugin/cli/",
-    "plugin/server/"
+    "cli/",
+    "server/"
   ],
   "engines": {
     "node": ">=20"
