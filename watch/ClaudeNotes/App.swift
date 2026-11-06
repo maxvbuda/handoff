@@ -572,10 +572,6 @@ struct EditorView: View {
                 }
                 .disabled(opened != nil)
             }
-            if !store.projects.isEmpty {
-                Button { showNewChat = true } label: { Label("New chat", systemImage: "plus.bubble") }
-            }
-
             Section {
                 ForEach(Array(store.draft.enumerated()), id: \.offset) { _, text in
                     Text(text).font(.footnote)
@@ -584,6 +580,11 @@ struct EditorView: View {
 
                 TextField(store.draft.isEmpty ? "Jot an idea…" : "Add a line…", text: $line)
                     .onSubmit(commitLine)
+            }
+
+            // Below the note, so on a small screen (SE 3 40mm) you can start writing without scrolling.
+            if !store.projects.isEmpty {
+                Button { showNewChat = true } label: { Label("New chat", systemImage: "plus.bubble") }
             }
 
             if !store.notes.isEmpty {

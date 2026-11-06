@@ -1,5 +1,7 @@
 # Handoff for Claude Code
 
+[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-2.2.2-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
+
 Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only thing that comes back is Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**.
 
 ```
@@ -21,7 +23,7 @@ Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plu
 
 **2. Get the `handoff` command**: it comes with the plugin. In Claude Code, run `/handoff:setup` once. It puts `handoff` in `~/.local/bin` and keeps it pointed at the current version when the plugin updates. (`npm install -g github:maxvbuda/handoff` still works too.)
 
-**3. Install the watch app**: from the App Store, or build it yourself: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
+**3. Install the watch app**: the App Store listing is being prepared ([docs/app-store](docs/app-store/README.md)), which is also the only way onto a watch in Family Setup. Until then, build it yourself: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
 
 **4. Pair (once):** run `handoff pair`, or `/handoff:pair` inside Claude Code. It shows a code like `K7QX-M2PA`; type it into the app on the watch. The watch generates its own topic and key, sends them sealed with a key derived from the code, and waits for the Mac's acknowledgement. Nothing secret is built into the app, so one build works for anyone. Running Claude Code sessions pick up a new pairing automatically. To pair again, tap **Settings** at the bottom of the list, then **Unpair**.
 
@@ -80,7 +82,7 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 ## Tests
 
 ```sh
-node --test test/server.test.mjs     # server: 40 tests against a mock relay (protocol, crypto, dedupe,
+node --test test/server.test.mjs     # server: 53 tests against a mock relay (protocol, crypto, dedupe,
                                      #   multi-session races, reconnects, stalls, re-pairing, pair command)
 node test/watch-e2e.mjs              # watch app in the SE 3 simulator + real pair/MCP server, via mock relay
 node test/watch-e2e.mjs --real-relay # same UI flow through the public ntfy.sh
@@ -88,5 +90,5 @@ node test/watch-e2e.mjs --real-relay # same UI flow through the public ntfy.sh
 
 The watch end-to-end run unpairs the simulator. Afterwards, run `pair` again.
 
-See [PRIVACY.md](PRIVACY.md) for exactly what data goes where, and [docs/official-listing.md](docs/official-listing.md) for the plan to get Handoff on Anthropic's approved channel list.
+See [PRIVACY.md](PRIVACY.md) for exactly what data goes where, [SECURITY.md](SECURITY.md) for how notes stay yours and how to report a problem, [CHANGELOG.md](CHANGELOG.md) for what changed, and [docs/official-listing.md](docs/official-listing.md) for the plan to get Handoff on Anthropic's approved channel list.
 

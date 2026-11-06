@@ -1,0 +1,25 @@
+name: Bug report
+description: Something in Handoff isn't working.
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Plugin version
+      description: Shown in `/plugin` in Claude Code.
+  - type: input
+    attributes:
+      label: Watch model and watchOS version
+  - type: input
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version`.
+  - type: textarea
+    attributes:
+      label: Anything else
+      description: Error messages or screenshots. Please don't paste your pairing code or anything from ~/.claude-watch-notes/config.json.
