@@ -2,7 +2,7 @@
 
 Jot ideas on your Apple Watch; Claude Code works on them while you're away. The watch never shows Claude's response, so there's nothing to get pulled into. Only a one-line suggested next prompt comes back, with an Accept suggestion button.
 
-This plugin is the Mac side: an MCP server (and Claude Code channel) that receives your watch's end-to-end encrypted notes and hands them to Claude. The watch app and full docs live in the [repository](https://github.com/maxvbuda/handoff).
+This plugin is the Mac side: skills to pair your watch, check for notes and install the `handoff` terminal command. The plugin itself doesn't declare an MCP server; `handoff start` runs Handoff's server (`server/handoff.mjs`) as a Claude Code channel for the session it opens, and that server receives your watch's end-to-end encrypted notes and hands them to Claude. The watch app and full docs live in the [repository](https://github.com/maxvbuda/handoff).
 
 - `/handoff:pair`: pair your watch
 - `/handoff:inbox`: work on pending ideas (or `/loop 5m /handoff:inbox` without channels)

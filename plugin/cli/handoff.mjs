@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// `handoff`: terminal command for Handoff. Lives outside the plugin so the plugin itself
-// never launches programs.
+// `handoff`: terminal command for Handoff. The plugin itself declares no MCP server: this command
+// starts Handoff's server (server/handoff.mjs) for the Claude Code sessions it opens.
 //
 //   handoff pair              pair your watch (shows a code to type on it)
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
 //   handoff mail [address]    email Claude too, through the Mail app
+//   handoff inbox             print notes that aren't done (what /handoff:inbox runs)
+//   handoff done <id> <summary> [--suggestion S]   mark a note done
 //   handoff install           put this command on your PATH (what /handoff:setup runs)
 
 import { spawn, execFile, execFileSync } from 'node:child_process'
@@ -19,9 +21,10 @@ import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, saveNote
 
 const SERVER = fileURLToPath(new URL('../server/handoff.mjs', import.meta.url))
 
-// Custom channels need the development flag until the plugin is on Anthropic's approved list;
-// then this becomes ['--channels', 'plugin:handoff@claude-plugins-official'].
-const CHANNEL_ARGS = ['--dangerously-load-development-channels', 'plugin:handoff@handoff']
+// Handoff's MCP server, for the sessions this command opens. Its tools show up as mcp__handoff__*.
+const MCP_ARGS = ['--mcp-config', JSON.stringify({ mcpServers: { handoff: { command: process.execPath, args: [SERVER] } } })]
+// Custom channels need the development flag until Handoff is on Anthropic's approved list.
+const CHANNEL_ARGS = ['--dangerously-load-development-channels', 'server:handoff']
 
 const [cmd, ...rest] = process.argv.slice(2)
 
@@ -45,11 +48,11 @@ if (cmd === 'start') {
     name = value
     rest.splice(i, flag)
   }
-  const claudeArgs = ['--permission-mode', 'auto', ...CHANNEL_ARGS, ...rest]
+  const claudeArgs = ['--permission-mode', 'auto', ...MCP_ARGS, ...CHANNEL_ARGS, ...rest]
   console.log(`Starting Claude Code with Handoff as the chat "${name}". Ideas from your watch will show up here.\n` +
     'Claude Code will warn about development channels: choose "I am using this for local development".\n')
   // caffeinate keeps the Mac awake (so Claude can keep working) for as long as the session runs.
-  // Tells this session's plugin server that it's listening, so it (not other open sessions) takes the notes.
+  // Tells this session's Handoff server that it's listening, so it (not other open sessions) takes the notes.
   const opts = { stdio: 'inherit', env: { ...process.env, CLAUDE_WATCH_NOTES_CHANNEL: '1', CLAUDE_WATCH_NOTES_NAME: name } }
   if (process.platform === 'darwin') run('caffeinate', ['-i', 'claude', ...claudeArgs], opts)
   else run('claude', claudeArgs, opts)
@@ -67,6 +70,14 @@ if (cmd === 'start') {
   mail(rest[0])
 } else if (cmd === 'install') {
   install()
+} else if (cmd === 'inbox') {
+  toolCall('watch_inbox', {}, 3000)
+} else if (cmd === 'done') {
+  const i = rest.indexOf('--suggestion')
+  const suggestion = i >= 0 ? rest.splice(i, 2)[1] : undefined
+  const [noteId, ...summary] = rest
+  if (!noteId || !summary.length) { console.error('Usage: handoff done <note_id> <summary> [--suggestion "next prompt"]'); process.exit(1) }
+  toolCall('watch_note_done', { note_id: noteId, summary: summary.join(' '), ...(suggestion && { suggestion }) })
 } else {
   console.log(`Handoff: jot ideas on your Apple Watch; Claude Code does them while you're away.
 
@@ -83,7 +94,36 @@ if (cmd === 'start') {
                             one account is listened to, and it's remembered for next time
   handoff install           Put this command on your PATH (/handoff:setup in Claude Code
                             runs it). It always runs the plugin's current version
+  handoff inbox             Print the notes that aren't done yet (/handoff:inbox runs it)
+  handoff done <note_id> <summary> [--suggestion "next prompt"]
+                            Mark a note done (and send a suggestion to the watch)
 `)
+}
+
+// One call to a Handoff server tool, for sessions that don't run the server themselves
+// (/handoff:inbox). `settleMs` gives the server time to fetch notes waiting on the relay first.
+function toolCall(name, args, settleMs = 0) {
+  const env = { ...process.env }
+  delete env.CLAUDE_WATCH_NOTES_CHANNEL // this short-lived server must not claim notes
+  const child = spawn(process.execPath, [SERVER], { env, stdio: ['pipe', 'pipe', 'ignore'] })
+  const send = m => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\n')
+  let buf = ''
+  child.stdout.on('data', d => {
+    buf += d
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      let m
+      try { m = JSON.parse(buf.slice(0, i)) } catch {}
+      buf = buf.slice(i + 1)
+      if (m?.id !== 2) continue
+      console.log(m.result?.content?.[0]?.text ?? m.error?.message ?? '')
+      child.kill()
+      process.exit(m.result?.isError || m.error ? 1 : 0)
+    }
+  })
+  send({ id: 1, method: 'initialize', params: {} })
+  send({ method: 'notifications/initialized' })
+  setTimeout(() => send({ id: 2, method: 'tools/call', params: { name, arguments: args } }), settleMs)
 }
 
 // Typing on a simulated watch is painful: hand the code to any booted watch simulator with the app.
@@ -313,7 +353,7 @@ function host(root) {
       `blocked by the permission system, skip it and mention it. When finished, call watch_note_done with note_id ${n.id}, ` +
       'a short summary, and optionally a suggestion (the next prompt they would likely send).'
     const args = ['-p', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
-      '--allowedTools', 'mcp__plugin_handoff_handoff__watch_note_done',
+      ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done',
       ...(chat.started ? ['--resume', chat.session] : ['--session-id', chat.session])]
     const env = { ...process.env, CLAUDE_WATCH_NOTES_NAME: n.to }
     delete env.CLAUDE_WATCH_NOTES_CHANNEL // its plugin server must not claim other notes
@@ -505,7 +545,11 @@ function install() {
   fs.mkdirSync(bin, { recursive: true })
   fs.writeFileSync(target, `#!/bin/sh
 # ${MARK} (/handoff:setup). Runs the installed plugin's \`handoff\` command.
-root=$(cat "\${CLAUDE_WATCH_NOTES_DIR:-$HOME/.claude-watch-notes}/plugin-root" 2>/dev/null)
+# The newest installed version of the plugin, else wherever /handoff:setup last ran from.
+cache="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/handoff/handoff"
+root=$(ls -1 "$cache" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+if [ -n "$root" ] && [ -f "$cache/$root/cli/handoff.mjs" ]; then root="$cache/$root"
+else root=$(cat "\${CLAUDE_WATCH_NOTES_DIR:-$HOME/.claude-watch-notes}/plugin-root" 2>/dev/null); fi
 if [ ! -f "$root/cli/handoff.mjs" ]; then
   echo "handoff: can't find the Handoff plugin. In Claude Code, run /plugin install handoff@handoff, then /handoff:setup." >&2
   exit 1

@@ -52,16 +52,12 @@ if (process.argv[2] === 'pair') {
 
 // ---------- MCP over stdio ----------
 fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
-// Where the plugin is installed now (updates move it), so the `handoff` command from
-// /handoff:setup always runs the current version.
-if (process.env.CLAUDE_PLUGIN_ROOT) try { writeAtomic(path.join(DIR, 'plugin-root'), process.env.CLAUDE_PLUGIN_ROOT) } catch {}
 
 const out = msg => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
 const log = (...a) => process.stderr.write(`[handoff] ${a.join(' ')}\n`)
 let ready = false
-// Every Claude Code session with the plugin runs this server, but only the one `handoff start`
-// opened is listening on the channel (it sets this). Others must not claim notes they'd ignore;
-// they can still work through them with watch_inbox.
+// Sessions `handoff start` opens run this server and listen on the channel (it sets this).
+// Others that run it (`handoff inbox`, host chats) must not claim notes they'd ignore.
 const CHANNEL = process.env.CLAUDE_WATCH_NOTES_CHANNEL === '1'
 // The chat's name on the watch (`handoff start --name`, else the project folder). Notes sent
 // to a chat by name only go to sessions with that name; notes sent to "any chat" go to any of them.
@@ -167,7 +163,7 @@ function handle(msg) {
     return out({ id, result: {
       protocolVersion: params?.protocolVersion || '2025-06-18',
       capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
-      serverInfo: { name: 'handoff', version: '2.2.3' },
+      serverInfo: { name: 'handoff', version: '2.3.0' },
       instructions: INSTRUCTIONS,
     } })
   }

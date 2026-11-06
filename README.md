@@ -1,6 +1,6 @@
 # Handoff for Claude Code
 
-[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-2.2.3-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
+[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-2.3.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
 
 Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only thing that comes back is Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**.
 
@@ -9,7 +9,7 @@ Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plu
 ```
 
 - **Watch app**: one SwiftUI file, watch-only (no iPhone app), no assets or dependencies. It builds for watchOS 26 / Apple Watch SE 3 with `-Osize`, whole-module optimization, and dead-code stripping. It works on a watch on its own, with no iPhone nearby, over the watch's Wi-Fi or cellular. Notes queue offline and retry when the app comes back to the foreground, and a note still sending when you lower your wrist gets a little extra time to finish.
-- **Plugin** (`plugin/`): a Claude Code plugin around one Node file with zero dependencies, plus the `handoff` terminal command (`plugin/cli/`). It decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
+- **Plugin** (`plugin/`): a Claude Code plugin with zero dependencies: skills, the `handoff` terminal command (`plugin/cli/`), and one Node file for the server (`plugin/server/`). The plugin doesn't declare the server itself; `handoff start` runs it for the session it opens. It decrypts notes on your Mac and drops anything that doesn't decrypt with your key (prompt-injection gate), then pushes each note into the session as a [channel](https://code.claude.com/docs/en/channels-reference) event.
 - **Privacy**: notes are end-to-end encrypted on the watch with a per-device key (stored in the Keychain). The relay only sees ciphertext on a random topic.
 
 ## Setup

@@ -747,7 +747,7 @@ describe('install command (the handoff command from the plugin)', () => {
     p.on('exit', code => r({ code, out }))
   })
 
-  test('installs a command that follows the plugin to wherever the server last ran from', async () => {
+  test('installs a command that follows the plugin to its newest version', async () => {
     const home = tmpDir(), dir = path.join(home, 'data')
     const env = { ...process.env, HOME: home, CLAUDE_WATCH_NOTES_DIR: dir, PATH: `${path.join(home, '.local', 'bin')}:${path.dirname(process.execPath)}:/usr/bin:/bin` }
     let r = await run(process.execPath, [CLI, 'install'], env)
@@ -756,15 +756,14 @@ describe('install command (the handoff command from the plugin)', () => {
     r = await run(shim, [], env)
     assert.match(r.out, /handoff pair/)
 
-    // A plugin update moves the plugin; the server records the new place when a session starts.
-    const moved = path.join(home, 'plugin-v2')
-    fs.cpSync(path.dirname(path.dirname(CLI)), moved, { recursive: true })
-    fs.appendFileSync(path.join(moved, 'cli', 'handoff.mjs'), "\nif (process.argv[2] === 'whoami') console.log('v2')\n")
-    const s = startServer(dir, { env: { CLAUDE_PLUGIN_ROOT: moved } })
-    await s.ready; await s.stop()
-    assert.equal(fs.readFileSync(path.join(dir, 'plugin-root'), 'utf8'), moved)
+    // A plugin update puts a new version in Claude Code's plugin cache; the newest one runs (10.0.0 > 9.0.0).
+    const cache = path.join(home, '.claude', 'plugins', 'cache', 'handoff', 'handoff')
+    for (const v of ['9.0.0', '10.0.0']) {
+      fs.cpSync(path.dirname(path.dirname(CLI)), path.join(cache, v), { recursive: true })
+      fs.appendFileSync(path.join(cache, v, 'cli', 'handoff.mjs'), `\nif (process.argv[2] === 'whoami') console.log('v${v}')\n`)
+    }
     r = await run(shim, ['whoami'], env)
-    assert.match(r.out, /v2/)
+    assert.match(r.out, /v10\.0\.0/)
 
     // Running it again is fine; someone else's file with that name is left alone.
     assert.equal((await run(process.execPath, [CLI, 'install'], env)).code, 0)
@@ -854,5 +853,36 @@ describe('pair command', () => {
     assert.equal(await run.exit, 1)
     assert.match(run.out, /Timed out/)
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false)
+  })
+})
+
+describe('inbox and done commands (/handoff:inbox without the plugin running a server)', () => {
+  const CLI = new URL('../plugin/cli/handoff.mjs', import.meta.url).pathname
+  const run = (args, env) => new Promise(r => {
+    const p = spawn(process.execPath, [CLI, ...args], { env })
+    spawned.add(p)
+    let out = ''
+    p.stdout.on('data', d => { out += d }); p.stderr.on('data', d => { out += d })
+    p.on('exit', code => r({ code, out }))
+  })
+
+  test('inbox fetches notes waiting on the relay; done marks one done and sends the suggestion', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const env = { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_CHANNEL: '1' }
+    const n = note('rename the button')
+    await post(cfg.topicURL, seal(n, cfg.key))
+    let r = await run(['inbox'], env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, new RegExp(`note_id=${n.id}`))
+    assert.match(r.out, /rename the button/)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'notes', `${n.id}.json`), 'utf8')).status, 'new') // not claimed
+
+    r = await run(['done', n.id, 'Renamed', 'it', '--suggestion', 'add a test'], env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /Suggestion sent/)
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'notes', `${n.id}.json`), 'utf8'))
+    assert.equal(saved.status, 'done'); assert.equal(saved.summary, 'Renamed it'); assert.equal(saved.suggestion, 'add a test')
+    assert.match((await run(['inbox'], env)).out, /No pending watch notes/)
+    assert.equal((await run(['done', 'nope', 'x'], env)).code, 1)
   })
 })

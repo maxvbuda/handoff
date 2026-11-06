@@ -1,7 +1,7 @@
 {
   "name": "handoff",
   "displayName": "Handoff",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "description": "Jot ideas on your Apple Watch and Claude Code works on them while you're away. Notes are end-to-end encrypted; only an optional one-line suggestion comes back to the watch.",
   "author": {
     "name": "Max Buda",
@@ -20,19 +20,5 @@
     "channel",
     "mcp",
     "ntfy"
-  ],
-  "mcpServers": {
-    "handoff": {
-      "command": "node",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/server/handoff.mjs"
-      ]
-    }
-  },
-  "channels": [
-    {
-      "server": "handoff",
-      "displayName": "Handoff"
-    }
   ]
 }

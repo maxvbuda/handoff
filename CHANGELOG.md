@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0 (2026-11-05)
+
+- The plugin no longer declares an MCP server. `handoff start` runs Handoff's server for the session it opens, the same way as before, so nothing changes in how you use it. This is what the Claude plugin directory requires of plugins from developers who aren't a verified organization.
+- New `handoff inbox` and `handoff done` commands. `/handoff:inbox` uses them, so it works in any Claude Code session.
+- The `handoff` command follows plugin updates by itself.
+
 ## 2.2.3 (2026-11-05)
 
 - `handoff host` no longer starts a chat over (in a new conversation) when it restarts within a second of a request from the watch.
