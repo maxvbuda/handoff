@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: dev.maxbuda
   deploymentTarget:
     watchOS: "26.0"   # Apple Watch SE 3 ships with watchOS 26: no back-deploy shims
+    iOS: "26.0"
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -26,7 +27,7 @@ targets:
     sources: [ClaudeNotes]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.maxbuda.ClaudeNotes
+        PRODUCT_BUNDLE_IDENTIFIER: dev.maxbuda.ClaudeNotes.watchkitapp
         TARGETED_DEVICE_FAMILY: "4"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -36,11 +37,27 @@ targets:
         # Uses only Apple's encryption (CryptoKit, HTTPS), which is exempt; stops App Store Connect asking on every upload.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         CODE_SIGN_STYLE: Automatic
-        SKIP_INSTALL: NO  # so Product > Archive includes the app (needed for the App Store)
+        SKIP_INSTALL: YES  # archived inside HandOff, not on its own
         # DEVELOPMENT_TEAM: XXXXXXXXXX  # set yours, or pick it in Xcode > Signing
       configs:
         Debug:
           INFOPLIST_FILE: Support/Debug-Info.plist
+  # The App Store only takes a watch-only app inside an empty iPhone stub
+  # (what Xcode's Watch-only App template makes). It has no code; archive this one.
+  HandOff:
+    type: application.watchapp2-container
+    platform: iOS
+    sources: []
+    dependencies: [{ target: ClaudeNotes }]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.maxbuda.ClaudeNotes
+        PRODUCT_NAME: Hand-Off
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Hand-Off
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        CODE_SIGN_STYLE: Automatic
   ClaudeNotesTests:
     type: bundle.unit-test
     platform: watchOS
@@ -66,3 +83,8 @@ schemes:
     test:
       config: Debug
       targets: [ClaudeNotesTests, ClaudeNotesUITests]
+  HandOff:
+    build:
+      targets: { HandOff: all }
+    archive:
+      config: Release

@@ -17,9 +17,9 @@ A watch in Family Setup can't install apps from Xcode, so the way to get the app
 
 1. **Enroll** at developer.apple.com/programs/enroll as an individual.
 2. **Sign in to Xcode** with that Apple ID (Xcode → Settings → Accounts).
-3. **Set the team.** In `watch/`, run `xcodegen generate`, open `ClaudeNotes.xcodeproj`, choose the ClaudeNotes target → Signing & Capabilities, and pick the new team. If Xcode says the bundle ID `dev.maxbuda.ClaudeNotes` is taken, change it in `project.yml` to something like `com.<yourname>.ideas` and generate again.
+3. **Set the team.** In `watch/`, run `xcodegen generate`, open `ClaudeNotes.xcodeproj`, and pick the new team under Signing & Capabilities for both the ClaudeNotes and HandOff targets. If Xcode says the bundle ID `dev.maxbuda.ClaudeNotes` is taken, change it in `project.yml` to something like `com.<yourname>.ideas` and generate again.
 4. **Create the app** in [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → New App. Use the bundle ID from step 3 and the name below. Watch-only apps are created under the **iOS** platform, and the build you upload is what makes it a watch app.
-5. **Upload a build.** In Xcode, set the destination to **Any watchOS Device**, then Product → Archive. In the Organizer, choose Distribute App → App Store Connect → Upload.
+5. **Upload a build.** In Xcode, choose the **HandOff** scheme (the empty iPhone stub the App Store requires around a watch-only app) and set the destination to **Any iOS Device**, then Product → Archive. In the Organizer, choose Distribute App → App Store Connect → Upload.
 6. **Try it with TestFlight first (optional).** Add testers in App Store Connect → TestFlight. Developers report mixed results with TestFlight on Family Setup watches, so if it doesn't show up on the watch, go straight to step 7.
 7. **Fill in the listing** with the text below, add the screenshots, answer the questions, and click **Submit for Review**. Once it's approved, install it from the App Store on the watch. With Ask to Buy on, the parent approves the download.
 

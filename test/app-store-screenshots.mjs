@@ -14,7 +14,7 @@ const ROOT = new URL('..', import.meta.url).pathname
 const SERVER = path.join(ROOT, 'server/handoff.mjs')
 const CLI = path.join(ROOT, 'cli/handoff.mjs')
 const OUT = path.join(ROOT, 'docs/app-store/screenshots')
-const BUNDLE = 'dev.maxbuda.ClaudeNotes'
+const BUNDLE = 'dev.maxbuda.ClaudeNotes.watchkitapp'
 const TYPES = process.argv.slice(2).length ? process.argv.slice(2)
   : ['Apple Watch Ultra 3 (49mm)', 'Apple Watch SE 3 (44mm)', 'Apple Watch SE 3 (40mm)']
 const sleep = ms => new Promise(r => setTimeout(r, ms))

@@ -131,7 +131,7 @@ function sendToSimulators(code) {
       if (!runtime.includes('watchOS')) continue
       for (const d of list) {
         try {
-          execFileSync('xcrun', ['simctl', 'launch', '--terminate-running-process', d.udid, 'dev.maxbuda.ClaudeNotes', '-pairCode', code], { stdio: 'ignore' })
+          execFileSync('xcrun', ['simctl', 'launch', '--terminate-running-process', d.udid, 'dev.maxbuda.ClaudeNotes.watchkitapp', '-pairCode', code], { stdio: 'ignore' })
           console.log(`  Sent the code to simulator "${d.name}".\n`)
         } catch {} // app not installed on this simulator
       }
