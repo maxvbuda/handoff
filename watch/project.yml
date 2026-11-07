@@ -30,9 +30,11 @@ targets:
         TARGETED_DEVICE_FAMILY: "4"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_KEY_CFBundleDisplayName: Ideas
+        INFOPLIST_KEY_CFBundleDisplayName: Hand-Off
         INFOPLIST_KEY_WKWatchOnly: YES
         INFOPLIST_KEY_WKApplication: YES
+        # Uses only Apple's encryption (CryptoKit, HTTPS), which is exempt; stops App Store Connect asking on every upload.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         CODE_SIGN_STYLE: Automatic
         # DEVELOPMENT_TEAM: XXXXXXXXXX  # set yours, or pick it in Xcode > Signing
       configs:

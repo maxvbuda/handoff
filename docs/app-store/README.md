@@ -8,6 +8,7 @@ A watch in Family Setup can't install apps from Xcode, so the way to get the app
 
 - **Icon:** `watch/ClaudeNotes/Assets.xcassets/AppIcon.appiconset/icon.png`, 1024×1024 with no transparency.
 - **Privacy manifest:** `watch/ClaudeNotes/PrivacyInfo.xcprivacy`. It declares no tracking, no collected data, and the reason the app uses UserDefaults (its own draft, history and settings).
+- **Name on the watch:** Hand-Off, matching the App Store name.
 - **Watch-only and standalone:** it needs no iPhone app and works without a phone nearby.
 - **Screenshots:** in `screenshots/`, for the Ultra 3 (422×514) and both SE 3 sizes (368×448 and 324×394). To make them again after changing the app, run `node test/app-store-screenshots.mjs`. It builds for the simulator only.
 - **Privacy policy:** [PRIVACY.md](../../PRIVACY.md), at `https://github.com/maxvbuda/handoff/blob/main/PRIVACY.md`.
@@ -64,7 +65,7 @@ Choose **Data Not Collected**. Apple counts data as collected when it leaves the
 
 ## Export compliance (encryption question)
 
-The app uses encryption: HTTPS, plus AES-GCM from Apple's CryptoKit to encrypt notes. When App Store Connect asks, the answer that matches is that the app **uses encryption within Apple's operating system** (CryptoKit and URLSession), not its own encryption code. Apple treats that as exempt. If you're unsure, Apple explains each answer in [Complying with encryption export regulations](https://developer.apple.com/documentation/security/complying-with-encryption-export-regulations). After you've answered once, you can add `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` to `project.yml` so it doesn't ask on every upload.
+The app uses encryption: HTTPS, plus AES-GCM from Apple's CryptoKit to encrypt notes. When App Store Connect asks, the answer that matches is that the app **uses encryption within Apple's operating system** (CryptoKit and URLSession), not its own encryption code. Apple treats that as exempt. If you're unsure, Apple explains each answer in [Complying with encryption export regulations](https://developer.apple.com/documentation/security/complying-with-encryption-export-regulations). `project.yml` already sets `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`, which gives that answer, so App Store Connect shouldn't ask on each upload.
 
 ## Notes for the reviewer
 
