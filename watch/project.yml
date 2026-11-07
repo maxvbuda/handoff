@@ -36,6 +36,7 @@ targets:
         # Uses only Apple's encryption (CryptoKit, HTTPS), which is exempt; stops App Store Connect asking on every upload.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: NO  # so Product > Archive includes the app (needed for the App Store)
         # DEVELOPMENT_TEAM: XXXXXXXXXX  # set yours, or pick it in Xcode > Signing
       configs:
         Debug:
