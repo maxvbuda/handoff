@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.1.0 (2026-11-11), with Hand-Off 1.1
+
+- **Pairing goes the other way:** Hand-Off shows a code, and you type it on the Mac with `handoff pair CODE` (or run `handoff pair` and type it when asked). Press Return instead to pair a watch still on Hand-Off 1.0, which asks you for a code. Pairing follows the relay as a stream instead of polling it, so it's quicker and stays under ntfy.sh's rate limit.
+- **Approve from your wrist:** in `handoff start` sessions, permission prompts also show up on the watch. Allow or deny there or in the terminal; whichever answers first wins.
+- **Recurring tasks:** set a note to go to Claude every hour, every day or every weekday at a time you pick. The Mac runs them, including one it missed while asleep, up to 2 hours late.
+- **Projects:** a screen with each open chat's branch, changed files, unpushed commits and the note it's working on.
+- **Quick replies,** **color themes** (clay, yellow, blue, green, purple, pink, graphite) and a tinted background you can turn off.
+- **Siri and a complication:** "Jot an idea in Hand-Off", and a watch-face button that opens it ready to dictate.
+- **In 9 languages:** English, Polish, Spanish, French, German, Italian, Brazilian Portuguese, Japanese and Simplified Chinese.
+- `handoff start` refuses to run next to a Handoff plugin older than 3.0, which would take notes and lose them.
+
 ## 3.0.0 (2026-11-06)
 
 - **The `handoff` command is now installed with npm**, separately from the Claude Code plugin: `npm install -g github:maxvbuda/handoff`. The plugin is skills only, with no code, which is what the Claude plugin directory needs.

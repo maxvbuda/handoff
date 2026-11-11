@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.1"
+    CURRENT_PROJECT_VERSION: "2"
     # Size/speed for SE 3 (S10, 40/44mm)
     SWIFT_OPTIMIZATION_LEVEL: -Osize
     SWIFT_COMPILATION_MODE: wholemodule
@@ -18,13 +18,15 @@ settings:
     STRIP_SWIFT_SYMBOLS: YES
     DEBUG_INFORMATION_FORMAT: dwarf
     ASSETCATALOG_COMPILER_OPTIMIZATION: space
-    LOCALIZATION_PREFERS_STRING_CATALOGS: NO
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
     ENABLE_PREVIEWS: NO
 targets:
   ClaudeNotes:
     type: application
     platform: watchOS
     sources: [ClaudeNotes]
+    dependencies: [{ target: HandOffWidget }] # embedded, for the watch-face complication
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxbuda.ClaudeNotes.watchkitapp
@@ -42,6 +44,27 @@ targets:
       configs:
         Debug:
           INFOPLIST_FILE: Support/Debug-Info.plist
+  # The watch-face complication. It only opens the app, so it shares no data with it.
+  HandOffWidget:
+    type: app-extension
+    platform: watchOS
+    sources: [HandOffWidget]
+    info:
+      path: HandOffWidget/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION) # must match the app's
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.maxbuda.ClaudeNotes.watchkitapp.widget
+        TARGETED_DEVICE_FAMILY: "4"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Hand-Off
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
   # The App Store only takes a watch-only app inside an empty iPhone stub
   # (what Xcode's Watch-only App template makes). It has no code; archive this one.
   HandOff:

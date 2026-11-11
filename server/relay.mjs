@@ -112,3 +112,56 @@ export async function saveNote(ev, key) {
   try { fs.writeFileSync(noteFile(id), JSON.stringify(note, null, 2), { flag: 'wx' }); return { note, created: true } } catch {}
   try { return { note: JSON.parse(fs.readFileSync(noteFile(id), 'utf8')), created: false } } catch { return { note, created: false } }
 }
+
+// ---------- recurring tasks ----------
+// The watch keeps the list and sends all of it, sealed, on "<topic>-r" whenever it changes; the
+// newest list wins. Every Handoff process on this Mac runs them: when one is due, its note is made
+// with a fixed id (O_EXCL), so it's made once however many processes notice, and then delivered
+// like any watch note. One missed while the Mac was asleep runs when it wakes, up to 2 hours late.
+export const SCHEDULES = path.join(DIR, 'schedules.json')
+const LATE_MS = 2 * 3_600_000
+
+export function saveSchedules(p) {
+  if (!Array.isArray(p?.schedules) || isNaN(Date.parse(p.ts))) return false
+  let cur = {}
+  try { cur = JSON.parse(fs.readFileSync(SCHEDULES, 'utf8')) } catch {}
+  if (cur.ts && Date.parse(cur.ts) >= Date.parse(p.ts)) return false // older than what we have
+  const int = (v, max) => Number.isInteger(v) && v >= 0 && v <= max
+  const list = p.schedules.slice(0, 20).filter(s => /^[\w-]{1,40}$/.test(s?.id) && typeof s.t === 'string' && s.t.trim() &&
+    ['hour', 'day', 'weekday'].includes(s.every) && int(s.h ?? 0, 23) && int(s.m, 59) && !isNaN(Date.parse(s.since)))
+    .map(s => ({ id: s.id, t: s.t.slice(0, 2000), every: s.every, h: s.h ?? 0, m: s.m, since: s.since,
+      ...(typeof s.to === 'string' && s.to && { to: s.to.slice(0, 40) }) }))
+  fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
+  writeAtomic(SCHEDULES, JSON.stringify({ ts: p.ts, list }, null, 2))
+  return true
+}
+
+// When `s` last came due at or before `now`, in this Mac's time zone.
+export function lastDue(s, now = new Date()) {
+  const d = new Date(now)
+  d.setSeconds(0, 0)
+  if (s.every === 'hour') {
+    d.setMinutes(s.m)
+    if (d > now) d.setHours(d.getHours() - 1)
+    return d
+  }
+  d.setHours(s.h, s.m)
+  if (d > now) d.setDate(d.getDate() - 1)
+  if (s.every === 'weekday') while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1)
+  return d
+}
+
+// Makes the notes for recurring tasks that are due. Returns the ones this call made.
+export function runDueSchedules(now = new Date()) {
+  let list = []
+  try { list = JSON.parse(fs.readFileSync(SCHEDULES, 'utf8')).list ?? [] } catch { return [] }
+  const made = []
+  for (const s of list) {
+    const due = lastDue(s, now)
+    if (due < Date.parse(s.since) || now - due > LATE_MS) continue
+    const note = { id: `sched-${s.id}-${due.getTime()}`, text: s.t, at: due.toISOString(), status: 'new', source: 'schedule', ...(s.to && { to: s.to }) }
+    fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
+    try { fs.writeFileSync(noteFile(note.id), JSON.stringify(note, null, 2), { flag: 'wx' }); made.push(note) } catch {} // made already
+  }
+  return made
+}

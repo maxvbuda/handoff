@@ -9,6 +9,7 @@ final class ClaudeNotesUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "-resetPairing", "YES",
+            "-quiet", "YES", // no haptic sounds from the simulator
             "-relay", try XCTUnwrap(env["RELAY"], "run via test/watch-e2e.mjs"),
             "-pairCode", try XCTUnwrap(env["PAIR_CODE"]),
             "-draft", "(\"e2e ui line 1\", \"e2e ui line 2\")",
@@ -39,7 +40,10 @@ final class ClaudeNotesUITests: XCTestCase {
         // The draft lines from launch arguments are shown, and sending hands them off.
         XCTAssertTrue(app.staticTexts["e2e ui line 1"].exists)
         send.tap()
-        XCTAssertTrue(app.images["Delivered"].waitForExistence(timeout: 15), "note never showed as delivered")
+        // The history is below Quick reply and New chat: on a 40mm screen, scroll down to it.
+        let delivered = app.images["Delivered"]
+        for _ in 0..<4 where !delivered.waitForExistence(timeout: 3) { app.swipeUp() }
+        XCTAssertTrue(delivered.waitForExistence(timeout: 15), "note never showed as delivered")
         XCTAssertTrue(app.staticTexts["→ e2e-chat"].exists, "history doesn't show which chat it went to")
         XCTAssertFalse(app.buttons["Send to Claude"].exists, "draft should be cleared after sending")
 

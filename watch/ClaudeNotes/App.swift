@@ -4,18 +4,21 @@ import WatchKit
 
 // Jot ideas on your wrist; Claude Code does them while you're away.
 // By design there is no response view: you get a haptic and a checkmark, nothing to read.
-// The one thing that comes back is Claude's suggested next prompt, which you can accept with a tap.
+// What comes back is Claude's suggested next prompt, which you can accept with a tap, and
+// permission prompts from `handoff start` chats, which you can allow or deny.
 
 @main
 struct ClaudeNotesApp: App {
-    @State private var store = Store()
+    @State private var store = Store.shared
     @Environment(\.scenePhase) private var phase
+    @AppStorage("theme") private var theme = Theme.clay
 
     var body: some Scene {
         WindowGroup {
             NavigationStack {
                 if store.pairing == nil { PairView() } else { EditorView() }
             }
+            .tint(theme.color)
             .environment(store)
         }
             .onChange(of: phase) {
@@ -23,6 +26,62 @@ struct ClaudeNotesApp: App {
                 if phase == .active { Task { async let f: Void = store.flush(); async let r: Void = store.refresh(); _ = await (f, r) } }
                 else if phase == .background { store.finishSendingInBackground() }
             }
+    }
+}
+
+/// The app's accent color, chosen in Settings → Color.
+enum Theme: String, CaseIterable, Identifiable {
+    case clay, yellow, blue, green, purple, pink, graphite
+    var id: Self { self }
+    var name: String {
+        switch self {
+        case .clay: String(localized: "Clay")
+        case .yellow: String(localized: "Yellow")
+        case .blue: String(localized: "Blue")
+        case .green: String(localized: "Green")
+        case .purple: String(localized: "Purple")
+        case .pink: String(localized: "Pink")
+        case .graphite: String(localized: "Graphite")
+        }
+    }
+    var color: Color {
+        switch self {
+        case .clay: Color(red: 0.85, green: 0.47, blue: 0.34)
+        case .yellow: Color(red: 0.98, green: 0.80, blue: 0.20)
+        case .blue: Color(red: 0.25, green: 0.56, blue: 0.98)
+        case .green: Color(red: 0.30, green: 0.78, blue: 0.45)
+        case .purple: Color(red: 0.66, green: 0.45, blue: 0.95)
+        case .pink: Color(red: 0.98, green: 0.42, blue: 0.62)
+        case .graphite: Color(white: 0.62)
+        }
+    }
+}
+
+extension View {
+    /// The chosen color as a soft glow behind the screen, unless Settings → Background is off.
+    func themedBackground() -> some View { modifier(ThemedBackground()) }
+}
+
+struct ThemedBackground: ViewModifier {
+    @AppStorage("theme") private var theme = Theme.clay
+    @AppStorage("themedBackground") private var on = true
+
+    func body(content: Content) -> some View {
+        content.containerBackground(on ? theme.color.opacity(0.45).gradient : Color.black.gradient, for: .navigation)
+    }
+}
+
+/// Haptics, except during tests: the simulator plays each one as a sound, and the tests send dozens.
+enum Haptic {
+    #if targetEnvironment(simulator)
+    static let quiet = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || UserDefaults.standard.bool(forKey: "quiet") // UI tests launch the app with `-quiet YES`
+    #else
+    static let quiet = false
+    #endif
+
+    static func play(_ type: WKHapticType) {
+        if !quiet { WKInterfaceDevice.current().play(type) }
     }
 }
 
@@ -68,8 +127,51 @@ struct Suggestion: Codable, Equatable {
     var chat: String? = nil // the chat that suggested it; accepting sends it back there
 }
 
+/// A permission prompt from a `handoff start` chat: Claude wants to use a tool and is waiting for
+/// a yes or no, here or in the terminal (whichever comes first counts).
+struct Approval: Codable, Identifiable, Equatable {
+    let id: String // Claude Code's request id
+    let tool: String
+    let what: String // Claude's description of the call
+    let input: String // the call's arguments, as text
+    var chat: String? = nil
+}
+
+/// A note Claude gets on a schedule, set up here and run by the Mac (see runDueSchedules in
+/// server/relay.mjs): every hour at :m, or every day or every weekday at h:m, Mac time.
+struct Recurring: Codable, Identifiable, Equatable {
+    enum Every: String, Codable, CaseIterable { case hour, day, weekday }
+    var id = UUID().uuidString
+    var text: String
+    var every: Every
+    var hour = 9
+    var minute = 0
+    var to: String? = nil // chat name; nil means any chat
+    var since = Date.now // never runs for a time before it was made
+
+    var when: String {
+        switch every {
+        case .hour: return String(localized: "Every hour at :\(String(format: "%02d", minute))")
+        case .day: return String(localized: "Every day at \(time)")
+        case .weekday: return String(localized: "Weekdays at \(time)")
+        }
+    }
+    private var time: String {
+        Calendar.current.date(from: DateComponents(hour: hour, minute: minute))?.formatted(date: .omitted, time: .shortened) ?? ""
+    }
+}
+
+/// What an open chat is up to, for the Projects screen.
+struct ChatStatus: Equatable {
+    var working: String? // the note it's on; nil when idle
+    var branch: String? // nil when the folder isn't a git repository
+    var changes = 0
+    var ahead = 0
+}
+
 /// What the Mac posts back, sealed: suggestions on "<topic>-s"; on "<topic>-c", chat heartbeats
-/// and `handoff host`'s list of projects new chats can start in.
+/// and `handoff host`'s list of projects new chats can start in, plus each chat's status
+/// (`working`, and `repo` messages with git status); permission prompts on "<topic>-p".
 private struct BackMessage: Decodable {
     var s: String?
     var chat: String?
@@ -80,10 +182,21 @@ private struct BackMessage: Decodable {
     var gone: Bool?
     var id: String? // folder listing replies on "<topic>-l"
     var dirs: [String]?
+    var p: String? // permission prompt: request id, tool, description, arguments
+    var tool: String?
+    var what: String?
+    var input: String?
+    var working: String?
+    var repo: String?
+    var branch: String?
+    var changes: Int?
+    var ahead: Int?
 }
 
 @MainActor @Observable
 final class Store {
+    /// The app's store; Siri uses the same one.
+    static let shared = Store()
     var draft: [String] { didSet { save() } }
     private(set) var notes: [Note]
     /// Settings → Suggestions. Off: no polling, nothing shown; back on: only suggestions from then on.
@@ -105,9 +218,24 @@ final class Store {
     private(set) var hostRoot: String?
     /// Chats we asked the host to start that haven't announced themselves yet.
     private(set) var starting: Set<String> = []
+    /// What each open chat is doing, by name.
+    private(set) var status: [String: ChatStatus] = [:]
+    /// Recurring tasks. The Mac gets the whole list whenever it changes.
+    var schedules: [Recurring] {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(schedules), forKey: "schedules")
+            defaults.set(true, forKey: "schedulesUnsent")
+            Task { await syncSchedules() }
+        }
+    }
+    /// Permission prompts waiting for an answer, oldest first.
+    private(set) var approvals: [Approval] = []
     /// The chat new notes go to; nil sends to any open chat.
     var target: String? { didSet { defaults.set(target, forKey: "target") } }
     static let chatWindow = "3m" // chats announce themselves every minute
+    static let approvalWindow = "10m" // older prompts have likely been answered at the Mac
+    /// Ready-made notes for the usual follow-ups, sent with one tap.
+    static let quickReplies = ["Keep going", "Commit it", "Run the tests", "Undo that"]
     private(set) var pairing = Keychain.load().flatMap { try? JSONDecoder().decode(Pairing.self, from: $0) }
     private var sending: Task<Void, Never>?
     private var refreshing: Task<Void, Never>?
@@ -123,6 +251,7 @@ final class Store {
         suggestionsOn = defaults.object(forKey: "suggestionsOn") as? Bool ?? true
         suggestion = (defaults.data(forKey: "suggestion")).flatMap { try? JSONDecoder().decode(Suggestion.self, from: $0) }
         target = defaults.string(forKey: "target")
+        schedules = (defaults.data(forKey: "schedules")).flatMap { try? JSONDecoder().decode([Recurring].self, from: $0) } ?? []
         #if targetEnvironment(simulator)
         if defaults.bool(forKey: "resetPairing") { setPairing(nil) } // UI tests start unpaired
         #endif
@@ -132,6 +261,21 @@ final class Store {
         let text = draft.joined(separator: "\n")
         guard !text.isEmpty else { return }
         draft = []
+        enqueue(text, to: target)
+    }
+
+    /// Siri's Tell Claude: queues the note for the chosen chat and tries to send it now.
+    /// Returns whether it reached the relay.
+    func sendFromSiri(_ text: String) async -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        enqueue(t, to: target)
+        await flush()
+        return pending == 0
+    }
+
+    /// Sends a quick reply as a note, to the chosen chat.
+    func sendQuick(_ text: String) {
         enqueue(text, to: target)
     }
 
@@ -147,7 +291,7 @@ final class Store {
         // Trim history, but never drop a note that hasn't been delivered yet.
         while notes.count > Self.keep, let i = notes.lastIndex(where: \.sent) { notes.remove(at: i) }
         save()
-        WKInterfaceDevice.current().play(.success)
+        Haptic.play(.success)
         Task { await flush() }
     }
 
@@ -164,7 +308,8 @@ final class Store {
         let task = Task {
             async let c: Void = checkChats()
             async let s: Void = checkSuggestion()
-            _ = await (c, s)
+            async let a: Void = checkApprovals()
+            _ = await (c, s, a)
         }
         refreshing = task
         await task.value
@@ -186,16 +331,30 @@ final class Store {
         var open = Set<String>()
         var hostProjects: [String] = []
         var hostChats: [String] = []
+        var git: [String: ChatStatus] = [:], beatWorking: [String: String] = [:], hostWorking: [String: String] = [:]
         for msg in Self.messages(in: data, key: SymmetricKey(data: pairing.key)) {
+            if let repo = msg.body.repo {
+                // From `handoff start` (git only) or `handoff host` (git, and the note it's running).
+                git[repo] = ChatStatus(branch: msg.body.branch, changes: msg.body.changes ?? 0, ahead: msg.body.ahead ?? 0)
+                hostWorking[repo] = msg.body.working
+                continue
+            }
             if msg.body.host != nil {
                 hostProjects = msg.body.gone == true ? [] : msg.body.projects ?? []
                 hostChats = msg.body.gone == true ? [] : msg.body.chats ?? []
                 if let root = msg.body.root { hostRoot = root }
             }
             guard let name = msg.body.chat, !name.isEmpty else { continue }
-            if msg.body.gone == true { open.remove(name) } else { open.insert(name) }
+            if msg.body.gone == true { open.remove(name) } else { open.insert(name); beatWorking[name] = msg.body.working }
         }
         open.formUnion(hostChats)
+        var status: [String: ChatStatus] = [:]
+        for name in open {
+            var s = git[name] ?? ChatStatus()
+            s.working = hostChats.contains(name) ? hostWorking[name] : beatWorking[name]
+            status[name] = s
+        }
+        if status != self.status { self.status = status }
         let sorted = open.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         if sorted != chats { chats = sorted }
         if hostProjects != projects { projects = hostProjects }
@@ -262,7 +421,7 @@ final class Store {
         guard await askHost(fields) else { return false }
         starting.insert(name)
         target = name
-        WKInterfaceDevice.current().play(.success)
+        Haptic.play(.success)
         return true
     }
 
@@ -270,7 +429,7 @@ final class Store {
     /// Terminal that continues the conversation. Returns false if the request couldn't be sent.
     func openOnComputer(_ name: String) async -> Bool {
         guard hostedChats.contains(name), await askHost(["open": name]) else { return false }
-        WKInterfaceDevice.current().play(.success)
+        Haptic.play(.success)
         return true
     }
 
@@ -283,6 +442,67 @@ final class Store {
                   let body = try? JSONDecoder().decode(BackMessage.self, from: plain) else { return nil }
             return (id, body)
         }
+    }
+
+    /// Rebuilds the list of permission prompts from the last few minutes on "<topic>-p", leaving
+    /// out ones answered here. A haptic says a new one came in.
+    func checkApprovals() async {
+        guard let pairing else { return }
+        let url = URL(string: "\(pairing.topicURL.absoluteString)-p/json?poll=1&since=\(Self.approvalWindow)")!
+        guard let (data, _) = try? await Relay.session.data(from: url),
+              self.pairing?.topicURL == pairing.topicURL else { return }
+        let answered = Set(defaults.stringArray(forKey: "answered") ?? [])
+        var open: [Approval] = []
+        for msg in Self.messages(in: data, key: SymmetricKey(data: pairing.key)) {
+            guard let id = msg.body.p, !answered.contains(id), !open.contains(where: { $0.id == id }) else { continue }
+            open.append(Approval(id: id, tool: msg.body.tool ?? "a tool", what: msg.body.what ?? "",
+                                 input: msg.body.input ?? "", chat: msg.body.chat))
+        }
+        if open.contains(where: { a in !approvals.contains(where: { $0.id == a.id }) }) {
+            Haptic.play(.notification)
+        }
+        if open != approvals { approvals = open }
+    }
+
+    /// Sends the whole list of recurring tasks to the Mac, sealed, on "<topic>-r", if it changed
+    /// since it was last sent. The newest list wins there; the relay keeps it 12 hours, and the Mac
+    /// keeps the last one it got.
+    func syncSchedules() async {
+        guard let pairing, defaults.bool(forKey: "schedulesUnsent") else { return }
+        let sent = schedules
+        let list: [[String: Any]] = sent.map { r in
+            var d: [String: Any] = ["id": r.id, "t": r.text, "every": r.every.rawValue, "h": r.hour, "m": r.minute,
+                                    "since": r.since.ISO8601Format()]
+            d["to"] = r.to
+            return d
+        }
+        guard let body = try? JSONSerialization.data(withJSONObject: ["schedules": list, "ts": Self.preciseTime.string(from: .now)]),
+              (try? await Ntfy.publish(body, key: SymmetricKey(data: pairing.key),
+                                       to: URL(string: pairing.topicURL.absoluteString + "-r")!)) != nil,
+              self.pairing?.topicURL == pairing.topicURL,
+              schedules == sent else { return } // edited while sending: that edit's own sync sends the new list
+        defaults.set(false, forKey: "schedulesUnsent")
+    }
+
+    /// To the millisecond, so two quick edits to the list are told apart.
+    nonisolated(unsafe) private static let preciseTime: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// Allows or denies a permission prompt. Returns false if the answer couldn't be sent.
+    func answer(_ a: Approval, allow: Bool) async -> Bool {
+        guard let pairing else { return false }
+        var fields: [String: Any] = ["v": a.id, "ok": allow, "ts": Date.now.ISO8601Format()]
+        fields["chat"] = a.chat
+        guard let body = try? JSONSerialization.data(withJSONObject: fields),
+              (try? await Ntfy.publish(body, key: SymmetricKey(data: pairing.key),
+                                       to: URL(string: pairing.topicURL.absoluteString + "-v")!)) != nil else { return false }
+        defaults.set(Array(((defaults.stringArray(forKey: "answered") ?? []) + [a.id]).suffix(50)), forKey: "answered")
+        approvals.removeAll { $0.id == a.id }
+        Haptic.play(allow ? .success : .directionDown)
+        return true
     }
 
     /// Picks up the newest suggestion the Mac posted to "<topic>-s" since we last looked.
@@ -302,16 +522,23 @@ final class Store {
     }
 
     func setPairing(_ p: Pairing?) {
+        // A send still trying the old pairing would hold up the queue: stop it, start over.
+        sending?.cancel()
+        sending = nil
+        retry?.cancel()
         pairing = p
+        status = [:]
+        if !schedules.isEmpty { defaults.set(true, forKey: "schedulesUnsent") } // the new pairing's Mac needs the list
         suggestion = nil
         chats = []
         projects = []
         hostedChats = []
         starting = []
+        approvals = []
         target = nil
         defaults.removeObject(forKey: "suggestionSince")
         Keychain.save(p.flatMap { try? JSONEncoder().encode($0) })
-        if p != nil { WKInterfaceDevice.current().play(.success); Task { await flush() } }
+        if p != nil { Haptic.play(.success); Task { await flush() } }
     }
 
     var pending: Int { notes.count(where: { !$0.sent }) }
@@ -322,10 +549,10 @@ final class Store {
     func flush() async {
         if let sending { return await sending.value }
         guard pairing != nil else { return }
-        let task = Task { await deliver() }
+        let task = Task { if await deliver() { await syncSchedules() } }
         sending = task
         await task.value
-        sending = nil
+        if sending == task { sending = nil } // not if setPairing replaced it meanwhile
     }
 
     /// The app is leaving the screen with notes still to send: ask watchOS for a little more time
@@ -341,13 +568,18 @@ final class Store {
         }
     }
 
-    private func deliver() async {
-        guard let pairing else { return }
+    /// Returns false if a note couldn't be sent (a retry is scheduled).
+    private func deliver() async -> Bool {
+        guard let pairing else { return false }
         for note in notes.reversed() where !note.sent {
-            guard await Self.post(note, to: pairing) else { return scheduleRetry() }
+            guard await Self.post(note, to: pairing) else {
+                if !Task.isCancelled { scheduleRetry() }
+                return false
+            }
             if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i].sent = true }
             save()
         }
+        return true
     }
 
     private func scheduleRetry() {
@@ -375,15 +607,22 @@ final class Store {
     }
 }
 
-enum PairError: Error { case badCode, noAnswer }
+enum PairError: Error { case badCode, noAnswer, relay }
 
-/// One-time pairing. The code shown by `handoff pair` derives (via HKDF) a pairing key
-/// and topic. We generate our own topic + key, send them sealed with the pairing key, and wait
-/// for the Mac's sealed ack. A mistyped code derives a different topic, so nothing answers.
+/// One-time pairing. The code we show (typed into `handoff pair` on the Mac) derives, via HKDF, a
+/// pairing key and topic. We generate our own topic + key, send them sealed with the pairing key,
+/// and wait for the Mac's sealed ack. A mistyped code derives a different topic, so nothing answers.
 enum Pairer {
     static let alphabet = Set("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
 
-    static func pair(code raw: String, polls: Int = 15, every: Duration = .seconds(2)) async throws -> Pairing {
+    /// A fresh 8-character code (about 40 bits), shown on the watch for the user to type on the Mac.
+    static func newCode() -> String {
+        let chars = Array("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
+        var rng = SystemRandomNumberGenerator()
+        return String((0..<8).map { _ in chars.randomElement(using: &rng)! })
+    }
+
+    static func pair(code raw: String, waitFor: Duration = .seconds(30)) async throws -> Pairing {
         let code = String(raw.uppercased().filter(alphabet.contains))
         guard code.count == 8 else { throw PairError.badCode }
 
@@ -401,24 +640,46 @@ enum Pairer {
         let offer = try JSONSerialization.data(withJSONObject: [
             "topic": pairing.topicURL.absoluteString, "key": pairing.key.base64EncodedString(), "n": nonce,
         ])
-        // Poll for replies after our own offer's message id: no dependence on clocks agreeing.
-        guard let offerID = try await Ntfy.publish(offer, key: pairKey, to: pairURL) else { throw PairError.noAnswer }
-
-        let poll = URL(string: "\(pairURL.absoluteString)/json?poll=1&since=\(offerID)")!
-        for _ in 0..<polls {
-            try await Task.sleep(for: every)
-            guard let (data, _) = try? await Relay.session.data(from: poll) else { continue }
-            for line in data.split(separator: UInt8(ascii: "\n")) {
-                guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: line),
-                      let box = ev.message.flatMap({ Data(base64Encoded: $0) }),
-                      let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: pairKey),
-                      let ack = try? JSONDecoder().decode([String: String].self, from: plain),
-                      ack["ack"] == nonce
-                else { continue }
-                return pairing
-            }
+        // Listen for replies after our own offer's message id: no dependence on clocks agreeing.
+        guard let offerID = try await Ntfy.publish(offer, key: pairKey, to: pairURL) else { throw PairError.relay }
+        let url = URL(string: "\(pairURL.absoluteString)/json?since=\(offerID)")!
+        let acked = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await waitForAck(nonce, at: url, key: pairKey) }
+            group.addTask { try? await Task.sleep(for: waitFor); return false }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
         }
-        throw PairError.noAnswer
+        try Task.checkCancellation()
+        guard acked else { throw PairError.noAnswer }
+        return pairing
+    }
+
+    /// Streams the pairing topic (one open request, not a poll every few seconds: ntfy.sh limits
+    /// requests per IP address, which the watch shares with the Mac at home) until the Mac's ack.
+    /// A stream ends after Relay.session's 30s limit; then it reconnects, waiting longer if refused.
+    nonisolated private static func waitForAck(_ nonce: String, at url: URL, key: SymmetricKey) async -> Bool {
+        while !Task.isCancelled {
+            var pause = Duration.seconds(1)
+            if let (bytes, res) = try? await Relay.session.bytes(from: url) {
+                if (res as? HTTPURLResponse)?.statusCode != 200 { pause = .seconds(15) }
+                do {
+                    for try await line in bytes.lines {
+                        guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: Data(line.utf8)),
+                              let box = ev.message.flatMap({ Data(base64Encoded: $0) }),
+                              let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: key),
+                              let ack = try? JSONDecoder().decode([String: String].self, from: plain),
+                              ack["ack"] == nonce
+                        else { continue }
+                        return true
+                    }
+                } catch {}
+            } else {
+                pause = .seconds(5)
+            }
+            try? await Task.sleep(for: pause)
+        }
+        return false
     }
 }
 
@@ -470,58 +731,60 @@ extension SymmetricKey {
 }
 
 struct PairView: View {
-    #if targetEnvironment(simulator)
-    @MainActor static var usedLaunchCode = false
-    #endif
     @Environment(Store.self) private var store
-    @State private var code = ""
-    @State private var status: String?
-    @State private var busy = false
+    @State private var code = Self.firstCode()
+    @State private var failure: String?
 
     var body: some View {
         List {
-            Text("On your Mac, run:\nhandoff pair\nthen enter the code.")
+            Text("On your Mac, run handoff pair and type this code:")
                 .font(.footnote).foregroundStyle(.secondary)
                 .listRowBackground(Color.clear)
-            TextField("Pairing code", text: $code)
-                .textInputAutocapitalization(.characters)
-                .autocorrectionDisabled()
-                .disabled(busy)
-                .onSubmit(pair)
-            if busy {
-                HStack { ProgressView().frame(width: 24); Text("Pairing…") }
-            } else if let status {
-                Text(status).font(.footnote).foregroundStyle(.red)
+            Text("\(code.prefix(4))-\(code.suffix(4))")
+                .font(.system(.title3, design: .monospaced)).bold()
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .foregroundStyle(failure == nil ? .primary : .secondary)
+                .accessibilityIdentifier("pairCode")
+                .listRowBackground(Color.clear)
+            if let failure {
+                Text(failure).font(.footnote).foregroundStyle(.red)
+                Button("New code") { code = Pairer.newCode(); self.failure = nil }
+            } else {
+                HStack { ProgressView().frame(width: 24); Text("Waiting for your Mac…").font(.footnote) }
             }
         }
         .navigationTitle("Pair")
-        #if targetEnvironment(simulator)
-        // `handoff pair` launches the simulator app with `-pairCode <code>`, so no typing is needed.
-        .task {
-            // Use a launch-argument code once; after Unpair, don't retry a stale one.
-            if !Self.usedLaunchCode, let c = UserDefaults.standard.string(forKey: "pairCode") {
-                Self.usedLaunchCode = true
-                code = c
-                pair()
+        .themedBackground()
+        // Offers the pairing as soon as the code is on screen, then waits up to 10 minutes for the Mac.
+        .task(id: code) {
+            guard failure == nil else { return }
+            do {
+                store.setPairing(try await Pairer.pair(code: code, waitFor: .seconds(600)))
+            } catch is CancellationError {
+            } catch PairError.noAnswer {
+                failure = String(localized: "This code expired.")
+            } catch PairError.relay {
+                failure = String(localized: "The relay is busy. Try again in a minute.")
+            } catch {
+                failure = String(localized: "Couldn't reach the relay. Check your connection.")
             }
         }
-        #endif
     }
 
-    private func pair() {
-        guard !busy, !code.isEmpty else { return }
-        busy = true
-        status = nil
-        Task {
-            do {
-                store.setPairing(try await Pairer.pair(code: code))
-            } catch PairError.badCode {
-                status = "Codes are 8 letters/digits, like K7QX-M2PA."
-            } catch {
-                status = "No answer from your Mac. Check the code and that pair is still running."
-            }
-            busy = false
+    #if targetEnvironment(simulator)
+    @MainActor static var usedLaunchCode = false
+    #endif
+
+    /// `handoff pair` and the tests launch the simulator app with `-pairCode <code>`, so they know the
+    /// code without reading it off the screen. Used once; after Unpair, a fresh code is shown.
+    @MainActor private static func firstCode() -> String {
+        #if targetEnvironment(simulator)
+        if !usedLaunchCode, let c = UserDefaults.standard.string(forKey: "pairCode") {
+            usedLaunchCode = true
+            return String(c.uppercased().filter(Pairer.alphabet.contains))
         }
+        #endif
+        return Pairer.newCode()
     }
 }
 
@@ -531,13 +794,16 @@ struct EditorView: View {
     @State private var showSettings = false
     @State private var showNewChat = false
     @State private var opened: String? // what Open on computer did, shown for a moment
-    private let accent = Color(red: 0.85, green: 0.47, blue: 0.34)
+    @AppStorage("theme") private var theme = Theme.clay
+    private var accent: Color { theme.color }
 
     var body: some View {
         @Bindable var store = store
         List {
+            ForEach(store.approvals) { a in ApprovalSection(approval: a) }
+
             if let s = store.suggestion {
-                Section(s.chat.map { "Suggestion · \($0)" } ?? "Suggestion") {
+                Section(s.chat.map { String(localized: "Suggestion · \($0)") } ?? String(localized: "Suggestion")) {
                     Text(s.text).font(.footnote)
                         .swipeActions { Button("Dismiss", role: .destructive) { store.suggestion = nil } }
                     Button(action: store.acceptSuggestion) {
@@ -563,12 +829,12 @@ struct EditorView: View {
             if let chat = store.target, store.hostedChats.contains(chat) {
                 Button {
                     Task {
-                        opened = await store.openOnComputer(chat) ? "Opened on your Mac" : "Couldn't reach your Mac"
+                        opened = await store.openOnComputer(chat) ? String(localized: "Opened on your Mac") : String(localized: "Couldn't reach your Mac")
                         try? await Task.sleep(for: .seconds(4))
                         opened = nil
                     }
                 } label: {
-                    Label(opened ?? "Open on computer", systemImage: "desktopcomputer")
+                    Label(opened ?? String(localized: "Open on computer"), systemImage: "desktopcomputer")
                 }
                 .disabled(opened != nil)
             }
@@ -578,8 +844,13 @@ struct EditorView: View {
                 }
                 .onDelete { store.draft.remove(atOffsets: $0) }
 
-                TextField(store.draft.isEmpty ? "Jot an idea…" : "Add a line…", text: $line)
+                TextField(store.draft.isEmpty ? String(localized: "Jot an idea…") : String(localized: "Add a line…"), text: $line)
                     .onSubmit(commitLine)
+            }
+
+            // The usual follow-ups, two taps away; only while nothing is being written.
+            if store.draft.isEmpty {
+                NavigationLink { QuickReplyView() } label: { Label("Quick reply", systemImage: "bolt") }
             }
 
             // Below the note, so on a small screen (SE 3 40mm) you can start writing without scrolling.
@@ -598,10 +869,17 @@ struct EditorView: View {
                             Spacer(minLength: 4)
                             Image(systemName: note.sent ? "checkmark" : "clock")
                                 .font(.caption2).foregroundStyle(note.sent ? accent : .secondary)
-                                .accessibilityLabel(note.sent ? "Delivered" : "Waiting to send")
+                                .accessibilityLabel(note.sent ? String(localized: "Delivered") : String(localized: "Waiting to send"))
                         }
                     }
                 }
+            }
+
+            if !store.chats.isEmpty {
+                NavigationLink { ProjectsView() } label: { Label("Projects", systemImage: "folder") }
+            }
+            NavigationLink { RecurringView() } label: {
+                Label(store.schedules.isEmpty ? String(localized: "Recurring") : String(localized: "Recurring (\(store.schedules.count))"), systemImage: "repeat")
             }
 
             Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
@@ -609,6 +887,7 @@ struct EditorView: View {
                 .listRowBackground(Color.clear)
         }
         .navigationTitle("Ideas")
+        .themedBackground()
         // Watch for chats and suggestions while the list is on screen (watchOS suspends us otherwise).
         .task {
             while !Task.isCancelled {
@@ -631,7 +910,7 @@ struct EditorView: View {
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showNewChat) {
             NavigationStack {
-                FolderView(path: "", title: store.hostRoot ?? "New chat") { showNewChat = false }
+                FolderView(path: "", title: store.hostRoot ?? String(localized: "New chat")) { showNewChat = false }
             }
         }
     }
@@ -643,17 +922,188 @@ struct EditorView: View {
     }
 }
 
+/// A permission prompt: what Claude wants to do, and Allow / Deny. Tap the text to read all of it.
+struct ApprovalSection: View {
+    let approval: Approval
+    @Environment(Store.self) private var store
+    @State private var busy = false
+    @State private var failed = false
+    @AppStorage("theme") private var theme = Theme.clay
+    private var accent: Color { theme.color }
+
+    var body: some View {
+        Section(approval.chat.map { String(localized: "Claude asks · \($0)") } ?? String(localized: "Claude asks")) {
+            NavigationLink {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(approval.tool).font(.headline)
+                        if !approval.what.isEmpty { Text(approval.what).font(.footnote) }
+                        Text(approval.input).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+                .navigationTitle("Details")
+                .themedBackground()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(approval.what.isEmpty ? String(localized: "Use \(approval.tool)") : approval.what).font(.footnote).lineLimit(3)
+                    Text(approval.input).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Button { answer(true) } label: { Label("Allow", systemImage: "checkmark") }
+                .foregroundStyle(accent).disabled(busy)
+            Button(role: .destructive) { answer(false) } label: { Label("Deny", systemImage: "xmark") }
+                .disabled(busy)
+            if failed { Text("Couldn't reach your Mac. Try again.").font(.footnote).foregroundStyle(.red) }
+        }
+    }
+
+    private func answer(_ allow: Bool) {
+        busy = true
+        failed = false
+        Task {
+            failed = !(await store.answer(approval, allow: allow))
+            busy = false
+        }
+    }
+}
+
+/// Ready-made notes ("Commit it", "Run the tests"…): one tap sends it and goes back.
+struct QuickReplyView: View {
+    @Environment(Store.self) private var store
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            ForEach(Store.quickReplies, id: \.self) { text in
+                Button(text) { store.sendQuick(text); dismiss() }
+            }
+        }
+        .navigationTitle(store.target ?? String(localized: "Quick reply"))
+        .themedBackground()
+    }
+}
+
+/// Each open chat: what it's working on, and its folder's git status.
+struct ProjectsView: View {
+    @Environment(Store.self) private var store
+    @AppStorage("theme") private var theme = Theme.clay
+    private var accent: Color { theme.color }
+
+    var body: some View {
+        List {
+            ForEach(store.chats, id: \.self) { name in
+                let s = store.status[name] ?? ChatStatus()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.headline)
+                    if let w = s.working {
+                        Label(w, systemImage: "hammer").font(.caption2).foregroundStyle(accent).lineLimit(2)
+                    } else {
+                        Text("Idle").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let branch = s.branch {
+                        Text([branch, s.changes > 0 ? "\(s.changes) changed" : "clean",
+                              s.ahead > 0 ? "\(s.ahead) to push" : nil].compactMap { $0 }.joined(separator: " · "))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if store.chats.isEmpty { Text("No chats are open.").font(.footnote).foregroundStyle(.secondary) }
+        }
+        .navigationTitle("Projects")
+        .themedBackground()
+        .task {
+            while !Task.isCancelled {
+                await store.checkChats()
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+}
+
+/// Notes Claude gets on a schedule: run the tests every morning, check something every hour.
+struct RecurringView: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        List {
+            NavigationLink { NewRecurringView() } label: { Label("New", systemImage: "plus") }
+            ForEach(store.schedules) { r in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(r.text).font(.footnote).lineLimit(3)
+                    Text(r.when).font(.caption2).foregroundStyle(.secondary)
+                    if let to = r.to { Text("→ \(to)").font(.caption2).foregroundStyle(.secondary) }
+                }
+            }
+            .onDelete { store.schedules.remove(atOffsets: $0) }
+            if !store.schedules.isEmpty {
+                Text("Your Mac runs these while a handoff start or handoff host is open. Swipe to delete.")
+                    .font(.caption2).foregroundStyle(.secondary).listRowBackground(Color.clear)
+            }
+        }
+        .navigationTitle("Recurring")
+        .themedBackground()
+    }
+}
+
+struct NewRecurringView: View {
+    @Environment(Store.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var every = Recurring.Every.day
+    @State private var time = Calendar.current.date(from: DateComponents(hour: 9, minute: 0)) ?? .now
+    @State private var to: String?
+
+    var body: some View {
+        List {
+            TextField("What should Claude do?", text: $text)
+            Picker("Repeat", selection: $every) {
+                Text("Every hour").tag(Recurring.Every.hour)
+                Text("Every day").tag(Recurring.Every.day)
+                Text("Weekdays").tag(Recurring.Every.weekday)
+            }
+            DatePicker(every == .hour ? String(localized: "Minute past") : String(localized: "Time"), selection: $time, displayedComponents: .hourAndMinute)
+            if !store.chatChoices.isEmpty {
+                Picker("To", selection: $to) {
+                    Text("Any chat").tag(String?.none)
+                    ForEach(store.chatChoices, id: \.self) { Text($0).tag(Optional($0)) }
+                }
+            }
+            Button {
+                let c = Calendar.current.dateComponents([.hour, .minute], from: time)
+                store.schedules.append(Recurring(text: text.trimmingCharacters(in: .whitespacesAndNewlines), every: every,
+                                                 hour: c.hour ?? 9, minute: c.minute ?? 0, to: to))
+                Haptic.play(.success)
+                dismiss()
+            } label: { Label("Save", systemImage: "checkmark") }
+            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .navigationTitle("New")
+        .themedBackground()
+        .onAppear { if to == nil { to = store.target } }
+    }
+}
 
 struct SettingsView: View {
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var confirmUnpair = false
     @State private var confirmClear = false
+    @AppStorage("theme") private var theme = Theme.clay
+    @AppStorage("themedBackground") private var themedBackground = true
 
     var body: some View {
         @Bindable var store = store
         NavigationStack {
             List {
+                Picker("Color", selection: $theme) {
+                    ForEach(Theme.allCases) { t in
+                        Label { Text(t.name) } icon: { Image(systemName: "circle.fill").foregroundStyle(t.color) }
+                            .tag(t)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                Toggle("Background", isOn: $themedBackground)
                 Section {
                     Toggle("Suggestions", isOn: $store.suggestionsOn)
                 } footer: {
@@ -664,6 +1114,7 @@ struct SettingsView: View {
                 Button("Unpair", role: .destructive) { confirmUnpair = true }
             }
             .navigationTitle("Settings")
+            .themedBackground()
             .confirmationDialog("Delete all history?", isPresented: $confirmClear) {
                 Button("Delete", role: .destructive) { store.clearHistory() }
             } message: {
@@ -720,6 +1171,7 @@ struct FolderView: View {
             }
         }
         .navigationTitle(title)
+        .themedBackground()
         .navigationDestination(item: $namingNewFolder) { folder in
             NameChatView(path: path, newFolder: folder, close: close)
         }
@@ -756,6 +1208,7 @@ struct NameChatView: View {
             }
         }
         .navigationTitle("Name chat")
+        .themedBackground()
         .onAppear { if name.isEmpty { name = store.defaultChatName(in: path, newFolder: newFolder) } }
     }
 

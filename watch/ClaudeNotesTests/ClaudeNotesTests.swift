@@ -23,7 +23,7 @@ final class ClaudeNotesTests: XCTestCase {
     override func setUp() async throws {
         Relay.base = try XCTUnwrap(env["RELAY"], "run via test/watch-e2e.mjs")
         if Self.pairing == nil {
-            Self.pairing = try await Pairer.pair(code: try XCTUnwrap(env["PAIR_CODE"]), polls: 50, every: .milliseconds(200))
+            Self.pairing = try await Pairer.pair(code: try XCTUnwrap(env["PAIR_CODE"]), waitFor: .seconds(10))
         }
     }
 
@@ -54,7 +54,7 @@ final class ClaudeNotesTests: XCTestCase {
     func testMalformedCodesAreRejectedWithoutNetwork() async {
         for bad in ["", "ABC", "ABCDEFGHJ", "0O1IL0O1", "!!!!-????"] {
             do {
-                _ = try await Pairer.pair(code: bad, polls: 1, every: .milliseconds(1))
+                _ = try await Pairer.pair(code: bad, waitFor: .milliseconds(1))
                 XCTFail("\(bad) should be rejected")
             } catch PairError.badCode {
             } catch {
@@ -63,9 +63,18 @@ final class ClaudeNotesTests: XCTestCase {
         }
     }
 
+    func testNewCodesAreValidAndFresh() {
+        let codes = (0..<50).map { _ in Pairer.newCode() }
+        for c in codes {
+            XCTAssertEqual(c.count, 8)
+            XCTAssertTrue(c.allSatisfy(Pairer.alphabet.contains), c)
+        }
+        XCTAssertEqual(Set(codes).count, codes.count)
+    }
+
     func testWrongCodeGetsNoAnswer() async {
         do {
-            _ = try await Pairer.pair(code: "ZZZZ-ZZZZ", polls: 5, every: .milliseconds(100))
+            _ = try await Pairer.pair(code: "ZZZZ-ZZZZ", waitFor: .milliseconds(500))
             XCTFail("nothing should answer a code nobody is pairing with")
         } catch PairError.noAnswer {
         } catch {
@@ -173,6 +182,88 @@ final class ClaudeNotesTests: XCTestCase {
         XCTAssertNil(store.suggestion)
         XCTAssertEqual(store.notes.first?.text, "e2e accepted suggestion")
         try await wait("accepted suggestion delivered") { store.pending == 0 }
+    }
+
+    func testApprovalsAreListedAndAnsweredOnce() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let key = SymmetricKey(data: p.key)
+        let store = freshStore()
+        store.setPairing(p)
+        let prompts = URL(string: p.topicURL.absoluteString + "-p")!
+        _ = try await Ntfy.publish(Data("{\"p\":\"forge\"}".utf8), key: SymmetricKey(size: .bits256), to: prompts)
+        for id in ["abcde", "fghij"] {
+            let body = try JSONSerialization.data(withJSONObject: ["p": id, "tool": "Bash", "what": "Run \(id)",
+                                                                   "input": "{\"command\": \"npm test\"}", "chat": "e2e-chat"])
+            _ = try await Ntfy.publish(body, key: key, to: prompts)
+        }
+        await store.checkApprovals()
+        XCTAssertEqual(store.approvals.map(\.id), ["abcde", "fghij"])
+        XCTAssertEqual(store.approvals.first?.what, "Run abcde")
+        XCTAssertEqual(store.approvals.first?.chat, "e2e-chat")
+
+        let answered = await store.answer(store.approvals[0], allow: true)
+        XCTAssertTrue(answered)
+        let denied = await store.answer(store.approvals[0], allow: false)
+        XCTAssertTrue(denied)
+        XCTAssertTrue(store.approvals.isEmpty)
+        // Answered here: they don't come back on the next check.
+        await store.checkApprovals()
+        XCTAssertTrue(store.approvals.isEmpty)
+
+        // The answers went to "<topic>-v", sealed, in order.
+        let (data, _) = try await Relay.session.data(from: URL(string: p.topicURL.absoluteString + "-v/json?poll=1&since=all")!)
+        let verdicts = data.split(separator: UInt8(ascii: "\n")).compactMap { line -> [String: Any]? in
+            guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: line),
+                  let box = ev.message.flatMap({ Data(base64Encoded: $0) }),
+                  let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: key) else { return nil }
+            return try? JSONSerialization.jsonObject(with: plain) as? [String: Any]
+        }
+        XCTAssertEqual(verdicts.map { $0["v"] as? String }, ["abcde", "fghij"])
+        XCTAssertEqual(verdicts.map { $0["ok"] as? Bool }, [true, false])
+        XCTAssertEqual(verdicts.first?["chat"] as? String, "e2e-chat")
+    }
+
+    func testQuickReplySendsToTheChosenChat() async throws {
+        let store = freshStore()
+        store.setPairing(try XCTUnwrap(Self.pairing))
+        store.target = "e2e-chat"
+        store.sendQuick("e2e quick reply")
+        XCTAssertEqual(store.notes.first?.text, "e2e quick reply")
+        XCTAssertEqual(store.notes.first?.to, "e2e-chat")
+        try await wait("quick reply delivered") { store.pending == 0 }
+    }
+
+    func testRecurringTasksAreSentToTheMacWholeAndRunThere() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let store = freshStore()
+        store.setPairing(p)
+        // Came due a minute ago, Mac time: the e2e server (named e2e-chat) runs it once.
+        let due = Calendar.current.dateComponents([.minute], from: .now.addingTimeInterval(-60))
+        store.schedules = [Recurring(text: "e2e recurring task", every: .hour, minute: due.minute ?? 0, to: "e2e-chat",
+                                     since: .now.addingTimeInterval(-3600))]
+        try await wait("list sent") { !store.defaults.bool(forKey: "schedulesUnsent") }
+        let r = try XCTUnwrap(store.schedules.first)
+        XCTAssertTrue(r.when.hasPrefix("Every hour at :"))
+        XCTAssertEqual(Store(defaults: store.defaults).schedules, store.schedules) // remembered
+    }
+
+    func testProjectsShowWhatEachChatIsDoing() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let key = SymmetricKey(data: p.key)
+        let store = freshStore()
+        store.setPairing(p)
+        let chats = URL(string: p.topicURL.absoluteString + "-c")!
+        for fields: [String: Any] in [["chat": "site", "working": "make the logo bigger"],
+                                      ["repo": "site", "branch": "main", "changes": 3, "ahead": 1],
+                                      ["chat": "docs"]] {
+            _ = try await Ntfy.publish(try JSONSerialization.data(withJSONObject: fields), key: key, to: chats)
+        }
+        await store.checkChats()
+        XCTAssertEqual(store.status["site"], ChatStatus(working: "make the logo bigger", branch: "main", changes: 3, ahead: 1))
+        XCTAssertEqual(store.status["docs"], ChatStatus())
+        _ = try await Ntfy.publish(try JSONSerialization.data(withJSONObject: ["chat": "site"]), key: key, to: chats)
+        await store.checkChats()
+        XCTAssertNil(store.status["site"]?.working) // done
     }
 
     // MARK: keychain

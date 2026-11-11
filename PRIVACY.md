@@ -1,6 +1,6 @@
 # Privacy Policy: Handoff
 
-_Last updated: November 5, 2026_
+_Last updated: November 11, 2026_
 
 Handoff has three parts: an Apple Watch app, the `handoff` command that runs on your own Mac, and a Claude Code plugin with skills that run that command. The developer runs no servers and collects no data.
 
@@ -45,7 +45,10 @@ All of it is encrypted with your key, so ntfy.sh can't read any of it:
 | --- | --- | --- |
 | `cw-…` | watch → Mac | your notes, and the chat each is for |
 | `cw-…-s` | Mac → watch | Claude's suggested next prompt |
-| `cw-…-c` | Mac → watch | open chat names; the host's chat names and top-level folder names |
+| `cw-…-c` | Mac → watch | open chat names, the note each is working on, and each chat folder's git branch, number of changed files and unpushed commits (never file names or contents); the host's chat names and top-level folder names |
+| `cw-…-p` | Mac → watch | permission prompts from `handoff start` sessions: the tool's name and what it wants to do (for example the command it would run) |
+| `cw-…-v` | watch → Mac | your answer to a permission prompt: allow or deny |
+| `cw-…-r` | watch → Mac | your recurring tasks: the note, how often, the time and the chat |
 | `cw-…-n` | watch → Mac | requests to the host: list a folder, start a chat, make a folder, open a chat on the Mac |
 | `cw-…-l` | Mac → watch | subfolder names, in reply to a list request |
 

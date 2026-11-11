@@ -3,7 +3,7 @@
 // The Claude Code plugin is skills only and runs this command; this command starts Handoff's server
 // (server/handoff.mjs) for the Claude Code sessions it opens.
 //
-//   handoff pair              pair your watch (shows a code to type on it)
+//   handoff pair [CODE]       pair your watch (type the code it shows)
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
 //   handoff mail [address]    email Claude too, through the Mail app
@@ -17,7 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, saveNote, seal, tryClaim, writeAtomic } from '../server/relay.mjs'
+import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, tryClaim, writeAtomic } from '../server/relay.mjs'
 
 const SERVER = fileURLToPath(new URL('../server/handoff.mjs', import.meta.url))
 
@@ -48,22 +48,39 @@ if (cmd === 'start') {
     name = value
     rest.splice(i, flag)
   }
+  // Plugin versions before 3.0 start their own Handoff server in every session. In this one it would
+  // take notes too, and Claude Code drops what it sends (it isn't the channel we asked for).
+  const old = oldPlugin()
+  if (old) {
+    console.error(`The Handoff plugin in Claude Code is version ${old}, which would take notes and lose them.\n` +
+      'Update it first: claude plugin marketplace update handoff && claude plugin update handoff@handoff')
+    process.exit(1)
+  }
   const claudeArgs = ['--permission-mode', 'auto', ...MCP_ARGS, ...CHANNEL_ARGS, ...rest]
   console.log(`Starting Claude Code with Handoff as the chat "${name}". Ideas from your watch will show up here.\n` +
-    'Claude Code will warn about development channels: choose "I am using this for local development".\n')
+    'Claude Code will warn about development channels: choose "I am using this for local development".\n' +
+    'It may also say "server:handoff · no MCP server configured with that name". That\'s expected: Handoff\'s\n' +
+    'server is passed on the command line, which that check doesn\'t look at. Notes still arrive.\n')
   // caffeinate keeps the Mac awake (so Claude can keep working) for as long as the session runs.
   // Tells this session's Handoff server that it's listening, so it (not other open sessions) takes the notes.
   const opts = { stdio: 'inherit', env: { ...process.env, CLAUDE_WATCH_NOTES_CHANNEL: '1', CLAUDE_WATCH_NOTES_NAME: name } }
   if (process.platform === 'darwin') run('caffeinate', ['-i', 'claude', ...claudeArgs], opts)
   else run('claude', claudeArgs, opts)
+  // The watch's Projects screen: this folder's git status, every minute while the chat is open.
+  const report = async () => postSide('c', { repo: name, ...(await gitStatus(process.cwd())) })
+  report()
+  setInterval(report, Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000).unref()
 } else if (cmd === 'pair') {
-  const child = run(process.execPath, [SERVER, 'pair'], { stdio: ['inherit', 'pipe', 'inherit'] })
-  let sent = false
-  child.stdout.on('data', d => {
-    process.stdout.write(d)
-    const code = /Pairing code:\s+([A-Z0-9]{4})-([A-Z0-9]{4})/.exec(String(d))
-    if (code && !sent) { sent = true; sendToSimulators(code[1] + code[2]) }
-  })
+  // The watch shows a code to type here. With no code (pressing Return, or not at a terminal, like
+  // the 1.0 /handoff:pair skill), show one to type on the watch instead, as Hand-Off 1.0 asks.
+  let code = rest.join('')
+  if (!code && process.stdin.isTTY) {
+    const rl = (await import('node:readline/promises')).createInterface({ input: process.stdin, output: process.stdout })
+    code = (await rl.question('Open Hand-Off on your watch and type the code it shows\n(or press Return if your watch asks you for a code): ')).trim()
+    rl.close()
+  }
+  if (code) run(process.execPath, [SERVER, 'pair', code], { stdio: 'inherit' })
+  else pairShowingCode()
 } else if (cmd === 'host') {
   host(path.resolve(rest[0] || process.cwd()))
 } else if (cmd === 'mail') {
@@ -79,7 +96,7 @@ if (cmd === 'start') {
 } else {
   console.log(`Handoff: jot ideas on your Apple Watch; Claude Code does them while you're away.
 
-  handoff pair              Pair your watch (shows a code to type on it)
+  handoff pair [CODE]       Pair your watch: type the code Hand-Off shows
   handoff start [args...]   Start Claude Code listening for ideas (extra args go to claude,
                             e.g. --continue to keep your last conversation)
     --name <name>           The chat's name on the watch (default: this folder's name)
@@ -94,6 +111,38 @@ if (cmd === 'start') {
   handoff done <note_id> <summary> [--suggestion "next prompt"]
                             Mark a note done (and send a suggestion to the watch)
 `)
+}
+
+// The version of an installed Handoff plugin older than 3.0 (those declare an MCP server), if any.
+function oldPlugin() {
+  try {
+    const installed = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude/plugins/installed_plugins.json'), 'utf8'))
+    for (const [id, list] of Object.entries(installed.plugins ?? {})) {
+      if (!id.startsWith('handoff@')) continue
+      for (const p of list) if (Number(String(p.version).split('.')[0]) < 3) return p.version
+    }
+  } catch {}
+  return null
+}
+
+// A message for the watch, sealed with the pairing key, on "<topic>-<suffix>".
+function postSide(suffix, obj, timeout = 20_000) {
+  const cfg = readConfig()
+  if (!cfg) return Promise.resolve()
+  return fetch(`${cfg.topicURL}-${suffix}`, { method: 'POST', body: seal({ ...obj, ts: new Date().toISOString() }, Buffer.from(cfg.key, 'base64')), signal: AbortSignal.timeout(timeout) })
+    .catch(() => {})
+}
+
+// A folder's branch, how many files have changes, and how many commits aren't pushed yet
+// ({} if it isn't a git repository).
+function gitStatus(dir) {
+  return new Promise(resolve => execFile('git', ['-C', dir, 'status', '--porcelain=v1', '--branch'], { timeout: 10_000 }, (e, out) => {
+    if (e) return resolve({})
+    const [head = '', ...files] = String(out).split('\n')
+    const branch = /^## (?:No commits yet on )?(.+?)(?:\.\.\.\S+)?(?: \[.*\])?$/.exec(head)?.[1]
+    resolve({ branch: branch?.startsWith('HEAD') ? 'detached' : branch, changes: files.filter(Boolean).length,
+      ahead: Number(/ahead (\d+)/.exec(head)?.[1] ?? 0) })
+  }))
 }
 
 // One call to a Handoff server tool, for sessions that don't run the server themselves
@@ -120,6 +169,17 @@ function toolCall(name, args, settleMs = 0) {
   send({ id: 1, method: 'initialize', params: {} })
   send({ method: 'notifications/initialized' })
   setTimeout(() => send({ id: 2, method: 'tools/call', params: { name, arguments: args } }), settleMs)
+}
+
+// Hand-Off 1.0's way: we show a code, the user types it on the watch.
+function pairShowingCode() {
+  const child = run(process.execPath, [SERVER, 'pair'], { stdio: ['inherit', 'pipe', 'inherit'] })
+  let sent = false
+  child.stdout.on('data', d => {
+    process.stdout.write(d)
+    const code = /Pairing code:\s+([A-Z0-9]{4})-([A-Z0-9]{4})/.exec(String(d))
+    if (code && !sent) { sent = true; sendToSimulators(code[1] + code[2]) }
+  })
 }
 
 // Typing on a simulated watch is painful: hand the code to any booted watch simulator with the app.
@@ -182,13 +242,15 @@ function host(root) {
   const logTo = (name, text) => fs.appendFileSync(logFile(name), text)
   const resumeCommand = c => `cd ${q(c.dir)} && claude --resume ${c.session}`
 
-  const post =(obj, timeout = 20_000, suffix = 'c') => {
-    const cfg = readConfig()
-    if (!cfg) return Promise.resolve()
-    return fetch(`${cfg.topicURL}-${suffix}`, { method: 'POST', body: seal({ ...obj, ts: new Date().toISOString() }, Buffer.from(cfg.key, 'base64')), signal: AbortSignal.timeout(timeout) })
-      .catch(() => {})
+  const post = (obj, timeout = 20_000, suffix = 'c') => postSide(suffix, obj, timeout)
+  // Also each chat's git status and the note it's working on, for the watch's Projects screen.
+  const announce = async () => {
+    await post({ host: hostName, root: path.basename(root), projects: projects(), chats: recentChats() })
+    for (const n of recentChats()) {
+      if (fs.existsSync(chats[n].dir)) post({ repo: n, working: busy.get(n), ...(await gitStatus(chats[n].dir)) })
+    }
   }
-  const announce = () => post({ host: hostName, root: path.basename(root), projects: projects(), chats: recentChats() })
+  const busy = new Map() // chat -> the note it's running
   setInterval(announce, Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000)
   const quit = async () => { await post({ host: hostName, gone: true }, 3000); process.exit(0) }
   process.on('SIGINT', quit)
@@ -201,7 +263,8 @@ function host(root) {
 
   // Relay subscriptions: reconnect with backoff, and restart with the new key when re-paired.
   const subs = new Set()
-  fs.watchFile(CONFIG, { interval: 2000 }, () => subs.forEach(c => c.abort()))
+  // Re-paired: follow the new topic, and show the projects on the watch right away.
+  fs.watchFile(CONFIG, { interval: 2000 }, () => { subs.forEach(c => c.abort()); announce() })
   function subscribe(suffix, since, onMessage) {
     ;(async () => {
       for (let delay = 1000; ; delay = Math.min(delay * 2, 60_000)) {
@@ -255,8 +318,11 @@ function host(root) {
     if (got && chats[got.note.to] && got.note.status === 'new') take(got.note)
     fs.writeFileSync(CURSOR, `${cfg.topicURL} ${ev.id}`)
   })
+  // Recurring tasks set up on the watch (see runDueSchedules).
+  subscribe('-r', () => '12h', (ev, key) => { try { if (saveSchedules(open(ev.message, key))) sweep() } catch {} })
   // Also pick up notes for our chats that a Claude Code window saved before we saw them.
   const sweep = () => {
+    runDueSchedules()
     let files = []
     try { files = fs.readdirSync(NOTES).filter(f => f.endsWith('.json')) } catch {}
     for (const f of files) {
@@ -342,7 +408,9 @@ function host(root) {
   async function runNote(n) {
     const chat = chats[n.to]
     const stamp = () => new Date().toLocaleTimeString()
-    logTo(n.to, `\n━━ ${stamp()} Note from your watch:\n${n.text}\n\n`)
+    logTo(n.to, `\n━━ ${stamp()} ${n.source === 'schedule' ? 'Recurring task' : 'Note from your watch'}:\n${n.text}\n\n`)
+    busy.set(n.to, n.text.slice(0, 120))
+    announce()
     console.log(`Chat "${n.to}": working on a note`)
     const prompt = `${n.text}\n\n---\nThis is a note the user jotted on their Apple Watch (note_id=${n.id}). They are away and ` +
       'will not see or answer questions: do it autonomously in this project, making reasonable assumptions. If an action is ' +
@@ -393,6 +461,8 @@ function host(root) {
         summary: failed ? `Failed: ${failed}` : result.slice(0, 4000) || 'Finished (no summary).', doneAt: new Date().toISOString() }, null, 2))
     }
     logTo(n.to, failed ? `━━ ${stamp()} Failed: ${failed}\n` : `━━ ${stamp()} Done.\n`)
+    busy.delete(n.to)
+    announce()
     console.log(`Chat "${n.to}": ${failed ? `failed (${failed})` : 'done'}`)
   }
 }

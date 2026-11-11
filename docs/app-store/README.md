@@ -45,7 +45,15 @@ Keep the hyphen. "Handoff" as one word is an Apple trademark (App Review Guideli
 > • Private by design: notes are end-to-end encrypted on the watch with a key only your watch and Mac share. The relay in between only ever sees scrambled data. No accounts, no analytics, no tracking.
 > • Works on its own: no iPhone needed. Uses your watch's Wi-Fi or cellular, and holds notes until it's back online.
 >
-> Requires a Mac running Claude Code with the free, open-source Handoff plugin (github.com/maxvbuda/handoff). Pair once with a short code.
+> Setup on your Mac (needs Claude Code and Node.js 20 or newer):
+> 1. Get the free Handoff plugin. In Claude Code, run:
+> /plugin marketplace add maxvbuda/handoff
+> /plugin install handoff@handoff
+> 2. Run /handoff:setup. Claude installs the handoff command for you.
+> 3. Run /handoff:pair and type the code into Hand-Off on your watch.
+> 4. Run handoff start in your project folder, then send your first idea.
+>
+> Help and source code: github.com/maxvbuda/handoff
 >
 > Not affiliated with Anthropic.
 

@@ -1,36 +1,50 @@
 #!/usr/bin/env node
 // handoff: zero-dependency MCP server + Claude Code channel.
 // Receives end-to-end encrypted ideas jotted on Apple Watch (relayed via ntfy)
-// and pushes them into the running Claude Code session. The only thing sent back is an
-// optional one-line suggested next prompt, encrypted with the same key (never Claude's response).
+// and pushes them into the running Claude Code session. What goes back to the watch, encrypted
+// with the same key, is an optional one-line suggested next prompt and, in `handoff start`
+// sessions, permission prompts to answer from the wrist (never Claude's response).
 //
 //   node handoff.mjs         # MCP server (Claude Code spawns this)
-//   node handoff.mjs pair    # show a code; type it on the watch to pair
+//   node handoff.mjs pair CODE  # pair with the watch showing CODE
+//   node handoff.mjs pair       # show a code to type on the watch (Hand-Off 1.0)
 //
 // This file never launches other programs. The `handoff` terminal command (../cli/) does that.
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { CONFIG, DIR, NOTES, RELAY, alive, currentClaim, events, noteFile, open, readConfig, saveNote, seal, tryClaim, writeAtomic } from './relay.mjs'
+import { CONFIG, DIR, NOTES, RELAY, alive, currentClaim, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, tryClaim, writeAtomic } from './relay.mjs'
 
 const CURSOR = path.join(DIR, 'cursor')
 
 // ---------- pair ----------
 // Code -> (pairing key, pairing topic) via HKDF. The watch derives the same pair,
 // posts its freshly generated topic+key sealed with the pairing key, and waits for our ack.
+// The watch shows the code and the user types it here; Hand-Off 1.0 works the other way around
+// (we show a code to type on the watch). Either way the watch's offer is cached on the relay,
+// so it doesn't matter which side starts first.
 if (process.argv[2] === 'pair') {
   const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // no 0/O, 1/I/L
-  const code = process.env.CLAUDE_WATCH_NOTES_PAIR_CODE ||
-    Array.from({ length: 8 }, () => ALPHABET[crypto.randomInt(ALPHABET.length)]).join('')
+  const typed = process.argv[3]
+  const code = typed !== undefined
+    ? [...typed.toUpperCase()].filter(ch => ALPHABET.includes(ch)).join('')
+    : process.env.CLAUDE_WATCH_NOTES_PAIR_CODE ||
+      Array.from({ length: 8 }, () => ALPHABET[crypto.randomInt(ALPHABET.length)]).join('')
+  if (code.length !== 8) {
+    console.error('  Codes are 8 letters and digits, like K7QX-M2PA.')
+    process.exit(1)
+  }
   const derive = (info, n) => Buffer.from(crypto.hkdfSync('sha256', code, 'claude-watch-notes-pair', info, n))
   const pk = derive('key', 32)
   const pairURL = `${RELAY}/cwp-${derive('topic', 16).toString('hex')}`
 
-  console.log(`\n  Pairing code:  ${code.slice(0, 4)}-${code.slice(4)}\n\n  Open the app on your watch and enter it. Waiting up to 10 minutes…\n`)
+  if (typed !== undefined) console.log('\n  Looking for your watch…\n')
+  else console.log(`\n  Pairing code:  ${code.slice(0, 4)}-${code.slice(4)}\n\n  Open the app on your watch and enter it. Waiting up to 10 minutes…\n`)
   try {
     // The pairing topic is derived from a fresh random code, so everything on it is from this attempt.
-    const timeout = AbortSignal.timeout(Number(process.env.CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS) || 600_000)
+    // A watch already showing the code has posted its offer, so a typed code needs only a short wait.
+    const timeout = AbortSignal.timeout(Number(process.env.CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS) || (typed !== undefined ? 60_000 : 600_000))
     for await (const ev of events(`${pairURL}/json?since=all`, timeout)) {
       if (ev.event !== 'message') continue
       let p
@@ -45,7 +59,9 @@ if (process.argv[2] === 'pair') {
       process.exit(0)
     }
   } catch (e) {
-    console.error(e.name === 'TimeoutError' ? '  Timed out. Run pair again for a new code.' : `  ${e.message}`)
+    if (e.name !== 'TimeoutError') console.error(`  ${e.message}`)
+    else if (typed !== undefined) console.error('  No watch answered. Check the code on your watch (it changes after 10 minutes) and try again.')
+    else console.error('  Timed out. Run pair again for a new code.')
   }
   process.exit(1)
 }
@@ -70,6 +86,7 @@ If an action is blocked or denied by the permission system, do not retry it or l
 Claude's response is never sent to the watch. Every note must end with a call to watch_note_done with its note_id and a short summary, including quick questions (put the answer in the summary) and notes you decide not to act on. Answering in the terminal alone is not enough: the user isn't there, and watch_note_done is how the result is saved for them and how the suggestion reaches the watch.
 You may also pass a suggestion: the one prompt the user would most likely send next, written as the user would type it (under 80 characters, e.g. "add tests for the new parser"). It appears on the watch with an Accept suggestion button that sends it back to you as a new note. Leave it out when there's no obvious next step.
 Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
+Notes with source="schedule" are recurring tasks the user set up on the watch; they come back on schedule, so do this run's work only.
 If you were not started as a channel, call watch_inbox to fetch pending notes.`
 
 const TOOLS = [
@@ -105,7 +122,7 @@ function push(note) {
 }
 
 // Messages back to the watch are sealed with the pairing key on side topics it polls:
-// "<topic>-s" for suggestions, "<topic>-c" for which chats are open.
+// "<topic>-s" for suggestions, "<topic>-c" for which chats are open, "<topic>-p" for permission prompts.
 async function postBack(suffix, obj, timeout = 20_000) {
   const cfg = readConfig()
   if (!cfg) return false
@@ -118,7 +135,11 @@ const sendSuggestion = (text, noteId) => postBack('s', { s: text, note: noteId, 
 
 // Listening sessions announce themselves every minute so the watch can list them by name.
 const HEARTBEAT_MS = Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000
-const heartbeat = () => postBack('c', { chat: NAME, ts: new Date().toISOString() })
+// The heartbeat also says which note this chat is working on, for the watch's Projects screen.
+const working = () => allNotes().find(n => n.status === 'sent' && currentClaim(n.id)?.pid === process.pid)?.text.slice(0, 120)
+const heartbeat = () => postBack('c', { chat: NAME, working: working(), ts: new Date().toISOString() })
+let beat // several changes at once (a burst of notes) send one heartbeat
+const beatSoon = () => { clearTimeout(beat); beat = setTimeout(heartbeat, 300) }
 if (CHANNEL) setInterval(heartbeat, HEARTBEAT_MS)
 let lastPairing = readConfig()?.topicURL
 fs.watchFile(CONFIG, { interval: 2000 }, () => { // re-paired: announce on the new topic right away
@@ -126,6 +147,60 @@ fs.watchFile(CONFIG, { interval: 2000 }, () => { // re-paired: announce on the n
   if (CHANNEL && ready && t && t !== lastPairing) heartbeat()
   lastPairing = t
 })
+
+// ---------- permission relay: approve or deny tool use from the watch ----------
+// Only `handoff start` sessions (channels) opt in. Claude Code sends each permission prompt here as
+// it opens it in the terminal; we post it sealed to "<topic>-p", and the watch answers sealed on
+// "<topic>-v". Whichever answer comes first, terminal or watch, is the one Claude Code applies.
+// Only ids this session was asked about are answered, each once, and only from our paired watch.
+const ASKED_MS = 15 * 60_000
+const asked = new Map() // request_id -> time asked
+function askWatch({ request_id, tool_name, description, input_preview } = {}) {
+  if (!/^[a-km-z]{5}$/.test(String(request_id))) return
+  for (const [id, at] of asked) if (Date.now() - at > ASKED_MS) asked.delete(id)
+  asked.set(request_id, Date.now())
+  postBack('p', { p: request_id, tool: String(tool_name ?? '').slice(0, 80), what: String(description ?? '').slice(0, 300),
+    input: String(input_preview ?? '').slice(0, 1500), chat: NAME, ts: new Date().toISOString() })
+}
+function verdict(v) {
+  const id = String(v?.v ?? '')
+  if (!asked.has(id) || typeof v.ok !== 'boolean' || (v.chat && v.chat !== NAME)) return
+  asked.delete(id)
+  log('watch', v.ok ? 'allowed' : 'denied', id)
+  out({ method: 'notifications/claude/channel/permission', params: { request_id: id, behavior: v.ok ? 'allow' : 'deny' } })
+}
+
+// Follows a side topic from the watch, sealed with the pairing key: reconnects with backoff and
+// starts over on the new topic when re-paired. `since` is asked again on each (re)connect.
+const following = new Set()
+fs.watchFile(CONFIG, { interval: 2000 }, () => following.forEach(c => c.abort()))
+async function follow(suffix, since, handle) {
+  for (let delay = 1000; ; delay = Math.min(delay * 2, 60000)) {
+    const cfg = readConfig()
+    if (cfg) {
+      const key = Buffer.from(cfg.key, 'base64')
+      const ctrl = new AbortController()
+      following.add(ctrl)
+      try {
+        for await (const ev of events(`${cfg.topicURL}${suffix}/json?since=${since()}`, ctrl.signal)) {
+          delay = 1000
+          if (ev.event === 'message') try { handle(open(ev.message, key)) } catch {} // not from our watch
+        }
+      } catch {
+        if (ctrl.signal.aborted) delay = 500
+      }
+      following.delete(ctrl)
+    }
+    await new Promise(r => setTimeout(r, cfg ? delay : 5000))
+  }
+}
+if (CHANNEL) {
+  // Only answers from now on: a prompt is never older than this session.
+  const started = Math.floor(Date.now() / 1000) - 5
+  follow('-v', () => String(started), verdict)
+  // The newest list of recurring tasks the relay still has (it keeps 12 hours).
+  follow('-r', () => '12h', p => { if (saveSchedules(p)) sweep() })
+}
 
 async function quit() {
   // Tell the watch this chat is gone, so it drops off the list now instead of in a few minutes.
@@ -148,6 +223,7 @@ async function callTool(name, args = {}) {
     const suggestion = typeof args.suggestion === 'string' ? args.suggestion.trim().slice(0, 200) : ''
     if (suggestion) n.suggestion = suggestion
     writeAtomic(f, JSON.stringify(n, null, 2))
+    if (CHANNEL && ready) beatSoon() // not working on it anymore
     if (n.source === 'email') return `Marked ${n.id} done. \`handoff mail\` will email the summary back.`
     if (!suggestion) return `Marked ${n.id} done.`
     return await sendSuggestion(suggestion, n.id)
@@ -162,8 +238,8 @@ function handle(msg) {
   if (method === 'initialize') {
     return out({ id, result: {
       protocolVersion: params?.protocolVersion || '2025-06-18',
-      capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
-      serverInfo: { name: 'handoff', version: '3.0.0' },
+      capabilities: { tools: {}, experimental: { 'claude/channel': {}, ...(CHANNEL && { 'claude/channel/permission': {} }) } },
+      serverInfo: { name: 'handoff', version: '3.1.0' },
       instructions: INSTRUCTIONS,
     } })
   }
@@ -174,6 +250,7 @@ function handle(msg) {
     if (CHANNEL) heartbeat()
     return
   }
+  if (method === 'notifications/claude/channel/permission_request') return CHANNEL && askWatch(params)
   if (id === undefined) return // other notifications
   if (method === 'ping') return out({ id, result: {} })
   if (method === 'tools/list') return out({ id, result: { tools: TOOLS } })
@@ -210,6 +287,7 @@ const LEGACY_GRACE_MS = 2 * 60_000
 // Their pending ones stay in watch_inbox.
 function sweep() {
   if (!CHANNEL || !ready) return
+  runDueSchedules()
   for (const n of allNotes()) {
     if (n.status === 'done') continue
     const c = currentClaim(n.id)
@@ -227,6 +305,7 @@ function claimAndPush(n, gen = 0) {
   n = { ...n, status: 'sent' }
   writeAtomic(noteFile(n.id), JSON.stringify(n, null, 2))
   push(n)
+  beatSoon() // now working on it
 }
 
 async function receive(ev, key) {

@@ -105,7 +105,7 @@ describe('MCP protocol', () => {
   test('initialize declares the channel capability and instructions', async () => {
     const r = await s.request('initialize', { protocolVersion: '2025-03-26' })
     assert.equal(r.result.protocolVersion, '2025-03-26')
-    assert.deepEqual(r.result.capabilities.experimental, { 'claude/channel': {} })
+    assert.deepEqual(r.result.capabilities.experimental, { 'claude/channel': {}, 'claude/channel/permission': {} })
     assert.ok(r.result.capabilities.tools)
     assert.match(r.result.instructions, /watch_note_done/)
     assert.match(r.result.instructions, /blocked/)
@@ -256,6 +256,115 @@ describe('delivery', () => {
     for (const n of ns) await s.waitFor(pushFor(n.id))
     const order = s.pushes().filter(m => m.params.content.startsWith('burst ')).map(m => m.params.content)
     assert.deepEqual(order, ns.map(n => n.t))
+  })
+})
+
+describe('approvals from the watch (permission relay)', () => {
+  const ask = (s, request_id, extra = {}) => s.send({ method: 'notifications/claude/channel/permission_request',
+    params: { request_id, tool_name: 'Bash', description: 'Run the tests', input_preview: '{"command": "npm test"}', ...extra } })
+  const prompts = async cfg => (await (await fetch(`${cfg.topicURL}-p/json?poll=1&since=all`)).text())
+    .trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const verdicts = s => s.msgs.filter(m => m.method === 'notifications/claude/channel/permission')
+
+  test('a prompt reaches the watch sealed, and only the watch\'s answer to it, once, is applied', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_NAME: 'website' } })
+    await s.ready
+    await connected(`${cfg.topic}-v`)
+    ask(s, 'abcde')
+    let evs = []
+    const end = Date.now() + 5000
+    while (!evs.length && Date.now() < end) { evs = await prompts(cfg); await sleep(50) }
+    assert.doesNotMatch(evs[0].message, /npm test/) // relay only sees ciphertext
+    const got = openBox(evs[0].message, cfg.key)
+    assert.deepEqual([got.p, got.tool, got.what, got.input, got.chat], ['abcde', 'Bash', 'Run the tests', '{"command": "npm test"}', 'website'])
+
+    const v = `${cfg.topicURL}-v`
+    await post(v, seal({ v: 'abcde', ok: true }, crypto.randomBytes(32))) // not our watch
+    await post(v, seal({ v: 'zzzzz', ok: true }, cfg.key)) // never asked
+    await post(v, seal({ v: 'abcde', ok: true, chat: 'other chat' }, cfg.key)) // another chat's
+    await post(v, seal({ v: 'abcde', ok: 'yes' }, cfg.key)) // not a verdict
+    await post(v, seal({ v: 'abcde', ok: true, chat: 'website' }, cfg.key))
+    await post(v, seal({ v: 'abcde', ok: false }, cfg.key)) // already answered
+    await s.waitFor(m => m.method === 'notifications/claude/channel/permission', 5000, 'verdict')
+    await sleep(300)
+    assert.deepEqual(verdicts(s).map(m => m.params), [{ request_id: 'abcde', behavior: 'allow' }])
+
+    ask(s, 'qwert'); await sleep(200)
+    await post(v, seal({ v: 'qwert', ok: false }, cfg.key))
+    await s.waitFor(m => m.params?.request_id === 'qwert', 5000, 'deny')
+    assert.equal(verdicts(s).at(-1).params.behavior, 'deny')
+    assert.equal(s.pushes().length, 0) // verdicts are never handed to Claude as notes
+    await s.stop()
+  })
+
+  test('sessions that aren\'t listening don\'t offer approvals or forward prompts', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const s = startServer(dir, { init: false, env: { CLAUDE_WATCH_NOTES_CHANNEL: '' } })
+    const r = await s.init()
+    assert.deepEqual(r.result.capabilities.experimental, { 'claude/channel': {} })
+    ask(s, 'abcde'); await sleep(400)
+    assert.equal((await prompts(cfg)).length, 0)
+    await s.stop()
+  })
+})
+
+describe('recurring tasks and the Projects screen', () => {
+  test('lastDue: hourly, daily and weekdays, in local time', async () => {
+    const { lastDue } = await import('../server/relay.mjs')
+    const at = (d, h, m) => new Date(2026, 10, d, h, m) // Nov 2026: the 6th is a Friday
+    assert.deepEqual(lastDue({ every: 'hour', m: 15 }, at(4, 10, 20)), at(4, 10, 15))
+    assert.deepEqual(lastDue({ every: 'hour', m: 30 }, at(4, 10, 20)), at(4, 9, 30))
+    assert.deepEqual(lastDue({ every: 'day', h: 8, m: 0 }, at(4, 9, 0)), at(4, 8, 0))
+    assert.deepEqual(lastDue({ every: 'day', h: 8, m: 0 }, at(4, 7, 59)), at(3, 8, 0))
+    assert.deepEqual(lastDue({ every: 'weekday', h: 8, m: 0 }, at(8, 12, 0)), at(6, 8, 0)) // Sunday -> Friday
+    assert.deepEqual(lastDue({ every: 'weekday', h: 8, m: 0 }, at(9, 7, 0)), at(6, 8, 0)) // Monday before 8
+  })
+
+  test('a due task becomes one note, delivered once across sessions; older or bad lists are ignored', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const env = { CLAUDE_WATCH_NOTES_SWEEP_MS: '200' }
+    const a = startServer(dir, { env }), b = startServer(dir, { env })
+    await Promise.all([a.ready, b.ready])
+    await connected(`${cfg.topic}-r`, 2)
+    const since = new Date(Date.now() - 3 * 3_600_000).toISOString()
+    const m = new Date(Date.now() - 60_000).getMinutes() // came due a minute ago
+    const list = (ts, schedules) => post(`${cfg.topicURL}-r`, seal({ ts, schedules }, cfg.key))
+    await list(new Date().toISOString(), [
+      { id: 'tests', t: 'run the tests', every: 'hour', m, since },
+      { id: 'later', t: 'not yet', every: 'hour', m, since: new Date().toISOString() }, // made after it was due
+      { id: 'bad id!', t: 'x', every: 'hour', m, since }, { id: 'nope', t: 'x', every: 'year', m, since },
+    ])
+    await list(new Date(Date.now() - 86_400_000).toISOString(), []) // an older list arriving late
+    await post(`${cfg.topicURL}-r`, seal({ ts: new Date().toISOString(), schedules: [] }, crypto.randomBytes(32))) // not our watch
+    const isTask = m => m.method === 'notifications/claude/channel' && m.params.content === 'run the tests'
+    const got = await Promise.race([a.waitFor(isTask, 5000, 'task'), b.waitFor(isTask, 5000, 'task')])
+    assert.equal(got.params.meta.source, 'schedule')
+    await sleep(800)
+    assert.equal(a.msgs.filter(isTask).length + b.msgs.filter(isTask).length, 1)
+    assert.equal([...a.pushes(), ...b.pushes()].length, 1)
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'schedules.json'), 'utf8'))
+    assert.deepEqual(saved.list.map(s => s.id), ['tests', 'later'])
+    await a.stop(); await b.stop()
+  })
+
+  test('heartbeats say which note the chat is working on, until it is done', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_NAME: 'website' } })
+    await s.ready
+    await connected(cfg.topic)
+    const beats = async () => (await (await fetch(`${cfg.topicURL}-c/json?poll=1&since=all`)).text())
+      .trim().split('\n').filter(Boolean).map(l => openBox(JSON.parse(l).message, cfg.key))
+    const n = note('make the logo bigger')
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const end = Date.now() + 5000
+    while (!(await beats()).some(b => b.working) && Date.now() < end) await sleep(100)
+    assert.equal((await beats()).at(-1).working, 'make the logo bigger')
+    await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok' } })
+    await sleep(800)
+    assert.equal((await beats()).at(-1).working, undefined)
+    await s.stop()
   })
 })
 
@@ -547,7 +656,9 @@ describe('host command (new chats from the watch)', () => {
     assert.equal(execFileSync('/bin/sh', ['-c', `printf %s ${title}`], { cwd: root }).toString(), `Handoff: ${evil}`)
     assert.match(launches[0].script, /tail -n \+1 -F '[^'$`"]+\.log'\n$/)
     assert.ok(!fs.existsSync(path.join(root, 'pwned')))
-    assert.deepEqual((await announced()).at(-1).chats.sort(), [evil, 'deep', 'made-on-watch'].sort())
+    assert.deepEqual((await announced()).filter(a => a.host).at(-1).chats.sort(), [evil, 'deep', 'made-on-watch'].sort())
+    // Each chat's status for the Projects screen (these folders aren't git repositories).
+    assert.ok((await announced()).some(a => a.repo === 'deep' && a.branch === undefined))
 
     // "Open on computer": only chats this host has, never stale or forged requests. A chat that
     // hasn't run a note yet opens a new conversation in its folder; every value is quoted.
@@ -743,8 +854,9 @@ describe('pair command', () => {
   const code = () => Array.from({ length: 8 }, () => ALPHABET[crypto.randomInt(31)]).join('')
   const derive = (c, info, n) => Buffer.from(crypto.hkdfSync('sha256', c, 'claude-watch-notes-pair', info, n))
 
-  function runPair(dir, c, timeoutMs = 15000) {
-    const p = spawn(process.execPath, [SERVER, 'pair'], {
+  // `typed`: the code the user types on the Mac (the watch shows it); otherwise the Mac shows `c`.
+  function runPair(dir, c, timeoutMs = 15000, typed) {
+    const p = spawn(process.execPath, [SERVER, 'pair', ...(typed === undefined ? [] : [typed])], {
       env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_PAIR_CODE: c,
         CLAUDE_WATCH_NOTES_NO_SIM: '1', CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS: String(timeoutMs) },
     })
@@ -807,6 +919,33 @@ describe('pair command', () => {
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false)
     assert.equal(run.p.exitCode, null, 'pair should still be waiting')
     assert.ok(await watchPair(c)); assert.equal(await run.exit, 0)
+  })
+
+  test('the code shown on the watch, typed on the Mac, pairs', async () => {
+    const dir = tmpDir(); const c = code()
+    const watch = watchPair(c) // the watch offers as soon as it shows the code
+    await sleep(150)
+    // Lowercase and a dash are fine; CLAUDE_WATCH_NOTES_PAIR_CODE is ignored when a code is typed.
+    const run = runPair(dir, code(), 15000, `${c.slice(0, 4).toLowerCase()}-${c.slice(4)}`)
+    const w = await watch
+    assert.ok(w, 'watch never got an ack'); assert.equal(await run.exit, 0)
+    assert.match(run.out, /Looking for your watch/)
+    assert.doesNotMatch(run.out, /Pairing code:/)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')), { topicURL: w.topic, key: w.key })
+  })
+
+  test('a typed code that no watch shows times out with advice', async () => {
+    const dir = tmpDir()
+    const run = runPair(dir, code(), 800, code())
+    assert.equal(await run.exit, 1)
+    assert.match(run.out, /No watch answered/)
+    assert.equal(fs.existsSync(path.join(dir, 'config.json')), false)
+  })
+
+  test('a typed code of the wrong length is refused', async () => {
+    const run = runPair(tmpDir(), code(), 15000, 'K7QX-M2')
+    assert.equal(await run.exit, 1)
+    assert.match(run.out, /8 letters and digits/)
   })
 
   test('a wrong code never pairs', async () => {

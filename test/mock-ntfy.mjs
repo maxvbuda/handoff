@@ -35,7 +35,8 @@ export async function startMock({ port = 0, keepaliveMs = 30_000 } = {}) {
     if (req.method === 'POST' || req.method === 'PUT') {
       const chunks = []
       for await (const c of req) chunks.push(c)
-      if (failPublishes > 0) { failPublishes--; return res.writeHead(500).end('{"error":"injected"}') }
+      // Only the watch's notes fail (the main topic): the Mac's heartbeats on side topics would race for them.
+      if (failPublishes > 0 && !/^cw-[0-9a-f]{32}-/.test(topic)) { failPublishes--; return res.writeHead(500).end('{"error":"injected"}') }
       const body = Buffer.concat(chunks)
       const id = crypto.randomBytes(6).toString('base64url')
       const ev = { id, time: Math.floor(Date.now() / 1000), event: 'message', topic }

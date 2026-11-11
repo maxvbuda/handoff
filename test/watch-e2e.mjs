@@ -96,6 +96,8 @@ try {
   once('e2e accepted suggestion')
   once('e2e history 1')
   once('e2e to chat')
+  once('e2e quick reply') // addressed to e2e-chat, this server's name
+  once('e2e recurring task') // set up on the watch, run by this server when due
   const launches = [...hostOut.matchAll(/^LAUNCH (.*)$/gm)].map(m => JSON.parse(m[1]))
   assert.deepEqual(launches.map(l => [l.dir, l.name]), [
     [path.join(root, 'e2e-project'), 'e2e-project'],
