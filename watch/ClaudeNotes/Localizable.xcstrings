@@ -1564,54 +1564,54 @@
         }
       }
     },
-    "Hands a note to Claude Code on your Mac.": {
+    "Hands a note to Claude Code.": {
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Przekazuje notatkę do Claude Code na Macu."
+            "value": "Przekazuje notatkę do Claude Code."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Envía una nota a Claude Code en tu Mac."
+            "value": "Envía una nota a Claude Code."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Transmet une note à Claude Code sur votre Mac."
+            "value": "Transmet une note à Claude Code."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Übergibt eine Notiz an Claude Code auf deinem Mac."
+            "value": "Übergibt eine Notiz an Claude Code."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passa una nota a Claude Code sul Mac."
+            "value": "Passa una nota a Claude Code."
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Envia uma nota ao Claude Code no Mac."
+            "value": "Envia uma nota ao Claude Code."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "MacのClaude Codeにメモを渡します。"
+            "value": "Claude Codeにメモを渡します。"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "将笔记交给 Mac 上的 Claude Code。"
+            "value": "将笔记交给 Claude Code。"
           }
         }
       }

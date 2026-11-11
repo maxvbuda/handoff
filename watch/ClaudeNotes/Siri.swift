@@ -5,7 +5,7 @@ import AppIntents
 
 struct TellClaude: AppIntent {
     static let title: LocalizedStringResource = "Tell Claude"
-    static let description = IntentDescription("Hands a note to Claude Code on your Mac.")
+    static let description = IntentDescription("Hands a note to Claude Code.")
 
     @Parameter(title: "Note", requestValueDialog: "What should Claude do?")
     var text: String
