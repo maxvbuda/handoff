@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## Unreleased, with Hand-Off 1.2.1
 
-- **GIFs:** Claude can send a short GIF instead of a screenshot when what it built moves, like a game. It records a video, turns it into a GIF with ffmpeg, and passes it as `image` (or `handoff done --image clip.gif`). GIFs can be up to 500 KB; screenshots stay under 300 KB.
+- **GIFs:** they play on the watch, in the screenshot's place (Hand-Off 1.2.1). Claude can send a short GIF instead of a screenshot when what it built moves, like a game. It records a video, turns it into a GIF with ffmpeg, and passes it as `image` (or `handoff done --image clip.gif`). GIFs can be up to 500 KB; screenshots stay under 300 KB.
 
 ## 3.2.0 (2026-11-11), with Hand-Off 1.2
 

@@ -1,5 +1,6 @@
 import CryptoKit
 import AppIntents
+import ImageIO
 import SwiftUI
 import WatchKit
 import WidgetKit
@@ -279,7 +280,7 @@ final class Store {
         suggestion = (defaults.data(forKey: "suggestion")).flatMap { try? JSONDecoder().decode(Suggestion.self, from: $0) }
         target = defaults.string(forKey: "target")
         if let saved = (defaults.data(forKey: "screenshot")).flatMap({ try? JSONDecoder().decode(Screenshot.self, from: $0) }),
-           let image = (try? Data(contentsOf: Self.screenshotFile)).flatMap(UIImage.init(data:)) {
+           let image = (try? Data(contentsOf: Self.screenshotFile)).flatMap(UIImage.picture) {
             screenshot = saved
             screenshotImage = image
         }
@@ -577,7 +578,7 @@ final class Store {
             if let box = sealed.flatMap({ Data(base64Encoded: $0) }),
                let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: key),
                let body = try? JSONDecoder().decode(BackMessage.self, from: plain),
-               let bytes = body.i.flatMap({ Data(base64Encoded: $0) }), let image = UIImage(data: bytes) {
+               let bytes = body.i.flatMap({ Data(base64Encoded: $0) }), let image = UIImage.picture(bytes) {
                 try? bytes.write(to: Self.screenshotFile)
                 screenshot = Screenshot(id: id, chat: body.chat)
                 screenshotImage = image
@@ -911,7 +912,7 @@ struct EditorView: View {
             if let shot = store.screenshot, let image = store.screenshotImage {
                 Section(shot.chat.map { String(localized: "Screenshot · \($0)") } ?? String(localized: "Screenshot")) {
                     NavigationLink { ScreenshotView(image: image) } label: {
-                        Image(uiImage: image).resizable().scaledToFit()
+                        PictureView(image: image)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .accessibilityLabel("Screenshot")
                     }
@@ -1051,12 +1052,47 @@ struct ScreenshotView: View {
     var body: some View {
         GeometryReader { geo in
             ScrollView(zoomed ? [.horizontal, .vertical] : .vertical) {
-                Image(uiImage: image).resizable().scaledToFit()
+                PictureView(image: image)
                     .frame(width: geo.size.width * (zoomed ? 2.5 : 1))
                     .onTapGesture { withAnimation { zoomed.toggle() } }
             }
         }
         .navigationTitle("Screenshot")
+    }
+}
+
+extension UIImage {
+    /// A screenshot, or a GIF clip Claude made from a video, as an animated image (UIImage(data:)
+    /// keeps only a GIF's first frame).
+    static func picture(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let count = min(CGImageSourceGetCount(source), 200)
+        guard count > 1 else { return UIImage(data: data) }
+        var frames: [UIImage] = [], duration = 0.0
+        for i in 0..<count {
+            guard let frame = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
+            let gif = (CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any])?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+            let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] ?? gif?[kCGImagePropertyGIFDelayTime]) as? Double ?? 0.1
+            duration += delay < 0.02 ? 0.1 : delay // what browsers do with a 0 delay
+            frames.append(UIImage(cgImage: frame))
+        }
+        return frames.count > 1 ? UIImage.animatedImage(with: frames, duration: duration) : frames.first
+    }
+}
+
+/// Shows a picture, playing it if it's a GIF clip.
+struct PictureView: View {
+    let image: UIImage
+
+    var body: some View {
+        if let frames = image.images, frames.count > 1, image.duration > 0 {
+            TimelineView(.animation(minimumInterval: image.duration / Double(frames.count))) { t in
+                let i = Int(t.date.timeIntervalSinceReferenceDate / image.duration * Double(frames.count)) % frames.count
+                Image(uiImage: frames[i]).resizable().scaledToFit()
+            }
+        } else {
+            Image(uiImage: image).resizable().scaledToFit()
+        }
     }
 }
 
