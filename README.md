@@ -87,16 +87,25 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 
 ## Your own relay (optional)
 
-ntfy.sh is free, but it limits each internet connection to 250 messages a day and files to 2 MB. When your home connection uses up its messages, the watch says the relay is busy until the next day, and GIFs bigger than about 1 MB don't get through. To get rid of both limits, run Handoff's own relay on your Mac:
+You don't need this. Out of the box, the watch and your Mac talk through [ntfy.sh](https://ntfy.sh), a free public relay, and everything works without zrok or any account.
+
+ntfy.sh does have limits: 250 messages a day for each internet connection, and files up to 2 MB. If your home connection uses up its messages, the watch says the relay is busy until the next day, and GIFs bigger than about 1 MB can't get through. If you hit those, run Handoff's own relay on your Mac instead:
 
 ```sh
-brew install zrok      # an open-source tunnel; then sign up free at https://myzrok.io and run: zrok enable YOUR_TOKEN
+brew install zrok       # an open-source tunnel (zrok 2; its own docs call the command zrok2)
+# sign up free at https://myzrok.io, open the zrok console, and copy your account token, then:
+zrok enable YOUR_TOKEN
 handoff relay setup
 ```
 
-It starts the relay on your Mac (and again at every login), and zrok gives it a fixed https address (zrok's free plan allows 5 GB a day, far more than Handoff uses), so the watch reaches it from anywhere, on Wi-Fi or cellular. Then pair again: on the watch, **Settings → Unpair**, open Hand-Off and run `handoff pair CODE`. Pairing still starts on ntfy.sh (one message each way); after that nothing uses ntfy.sh. It needs Hand-Off 1.3 or later; older watch apps stay on ntfy.sh.
+Setup starts the relay on your Mac (and again at every login), and zrok gives it a fixed https address like `https://handoff-1a2b3c4d5e.shares.zrok.io`, so the watch reaches it from anywhere, on Wi-Fi or cellular. zrok's free plan allows 5 GB a day, far more than Handoff uses. Then pair again: on the watch, **Settings → Unpair**, open Hand-Off and run `handoff pair CODE`. Pairing still starts on ntfy.sh (one message each way); after that nothing uses ntfy.sh.
 
-Like ntfy.sh, the relay only ever sees encrypted messages. It keeps them for 12 hours in `~/.claude-watch-notes/relay`. While your Mac is off or asleep the watch can't send notes, but no Claude session could work on them then anyway. `handoff relay status` checks it, and `handoff relay off` goes back to ntfy.sh.
+- **Only your watch uses it.** Your relay is yours: other people's Handoff keeps using ntfy.sh, or their own relay if they set one up.
+- **Without zrok,** `handoff relay setup` just tells you how to install it, and nothing changes: you stay on ntfy.sh.
+- **Older watch apps** (before Hand-Off 1.3) can't move, so they stay on ntfy.sh even after you set it up.
+- **Private, like ntfy.sh:** the relay only ever sees encrypted messages, and only accepts Handoff's. It keeps them for 12 hours in `~/.claude-watch-notes/relay`.
+- **Your Mac has to be on.** While it's off or asleep the watch can't send notes, but no Claude session could work on them then anyway.
+- `handoff relay status` checks it, and `handoff relay off` goes back to ntfy.sh (pair again afterwards).
 
 ## Notes
 
