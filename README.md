@@ -90,10 +90,11 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 ntfy.sh is free, but it limits each internet connection to 250 messages a day and files to 2 MB. When your home connection uses up its messages, the watch says the relay is busy until the next day, and GIFs bigger than about 1 MB don't get through. To get rid of both limits, run Handoff's own relay on your Mac:
 
 ```sh
-handoff relay setup    # needs Tailscale (free): install it from the Mac App Store and sign in first
+brew install zrok      # an open-source tunnel; then sign up free at https://myzrok.io and run: zrok enable YOUR_TOKEN
+handoff relay setup
 ```
 
-It starts the relay on your Mac (and again at every login), and Tailscale Funnel gives it a fixed https address, like https://your-mac.tail1234.ts.net, so the watch reaches it from anywhere, on Wi-Fi or cellular. Then pair again: on the watch, **Settings → Unpair**, open Hand-Off and run `handoff pair CODE`. Pairing still starts on ntfy.sh (one message each way); after that nothing uses ntfy.sh. It needs Hand-Off 1.3 or later; older watch apps stay on ntfy.sh.
+It starts the relay on your Mac (and again at every login), and zrok gives it a fixed https address (zrok's free plan allows 5 GB a day, far more than Handoff uses), so the watch reaches it from anywhere, on Wi-Fi or cellular. Then pair again: on the watch, **Settings → Unpair**, open Hand-Off and run `handoff pair CODE`. Pairing still starts on ntfy.sh (one message each way); after that nothing uses ntfy.sh. It needs Hand-Off 1.3 or later; older watch apps stay on ntfy.sh.
 
 Like ntfy.sh, the relay only ever sees encrypted messages. It keeps them for 12 hours in `~/.claude-watch-notes/relay`. While your Mac is off or asleep the watch can't send notes, but no Claude session could work on them then anyway. `handoff relay status` checks it, and `handoff relay off` goes back to ntfy.sh.
 

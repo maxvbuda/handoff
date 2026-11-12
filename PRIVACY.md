@@ -8,7 +8,7 @@ Handoff has three parts: an Apple Watch app, the `handoff` command that runs on 
 
 - Notes you write are stored on your watch until they're delivered, and the 12 most recent are kept as a history list.
 - Each note is encrypted on the watch with AES-256-GCM, using a key that only your watch and your Mac have. It's then sent to a public relay, [ntfy.sh](https://ntfy.sh), on a random topic.
-- If you set up your own relay (`handoff relay setup`), notes go to that relay on your own Mac instead, through Tailscale Funnel, and only pairing uses ntfy.sh.
+- If you set up your own relay (`handoff relay setup`), notes go to that relay on your own Mac instead, through zrok's tunnel (which, like the relay, only sees encrypted data), and only pairing uses ntfy.sh.
 - The relay only ever sees encrypted data. It can't read your notes. ntfy.sh keeps messages for up to about 12 hours, and see ntfy's own [privacy policy](https://ntfy.sh/docs/privacy/). Like any web service, it can see your IP address.
 - The encryption key is stored in the watch's Keychain and never leaves your devices, except once, during pairing, when it's sent to your Mac encrypted with a key derived from the one-time pairing code.
 

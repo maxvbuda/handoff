@@ -9,7 +9,7 @@
 - **Ship it:** in **Projects**, a chat with changes or unpushed commits gets a **Ship it** button: Claude commits, pushes and, if the project is deployed somewhere, deploys. It's on each screenshot too.
 - **Your own quick buttons:** add your own one-tap notes under **Quick reply**, and swipe to delete them.
 - **Evening recap:** at 6 PM the watch shows each chat's finished notes for the day, in your own words. Tap a chat to see its screenshots.
-- **Your own relay:** `handoff relay setup` runs Handoff's own relay on your Mac and puts it on the internet with Tailscale Funnel (free), so there's no daily message limit and no 2 MB file limit, like ntfy.sh has. Pair again to move the watch to it. `handoff relay status` checks it; `handoff relay off` goes back to ntfy.sh.
+- **Your own relay:** `handoff relay setup` runs Handoff's own relay on your Mac and puts it on the internet with zrok (open source, free account), so there's no daily message limit and no 2 MB file limit, like ntfy.sh has. Pair again to move the watch to it. `handoff relay status` checks it; `handoff relay off` goes back to ntfy.sh.
 - **Fewer relay messages:** chats now send their status when it changes and every 15 minutes, not every minute. ntfy.sh limits how many messages each home internet connection can send per day, and the old once-a-minute updates could use it all up, which stopped notes from getting through.
 
 ## 3.2.0 (2026-11-11), with Hand-Off 1.2

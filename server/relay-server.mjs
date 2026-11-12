@@ -1,5 +1,5 @@
 // Your own relay, instead of ntfy.sh: the small part of ntfy that Handoff uses, run on this Mac by
-// `handoff relay` and put on the internet with Tailscale Funnel. Like ntfy.sh it only ever sees
+// `handoff relay` and put on the internet with zrok. Like ntfy.sh it only ever sees
 // sealed messages (the watch and the Mac encrypt everything), so it can't read your notes.
 //
 //   POST /<topic>                       publish; bodies of 4 KB or more become attachments
@@ -28,7 +28,8 @@ export async function startRelay({ port = 0, host = '127.0.0.1', dir, publicURL 
   const log = path.join(dir, 'messages.jsonl')
   const topics = new Map() // topic -> [event], oldest first
   const streams = new Set() // { topic, res }
-  let base = publicURL
+  // publicURL may be a function: the address can change, or be known only after the relay started.
+  const baseURL = () => (typeof publicURL === 'function' ? publicURL() : publicURL) || local
 
   // Messages from before a restart, minus expired ones.
   const now = () => Math.floor(Date.now() / 1000)
@@ -82,6 +83,7 @@ export async function startRelay({ port = 0, host = '127.0.0.1', dir, publicURL 
     return i >= 0 ? list.slice(i + 1) : list
   }
 
+  let local
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x')
     const parts = url.pathname.split('/').filter(Boolean)
@@ -113,7 +115,7 @@ export async function startRelay({ port = 0, host = '127.0.0.1', dir, publicURL 
         if (body.length >= ATTACH_AT) {
           fs.writeFileSync(path.join(files, `${id}.txt`), body, { mode: 0o600 })
           ev.message = 'You received a file: attachment.txt'
-          ev.attachment = { name: 'attachment.txt', size: body.length, url: `${base}/file/${id}.txt` }
+          ev.attachment = { name: 'attachment.txt', size: body.length, url: `${baseURL()}/file/${id}.txt` }
         } else {
           ev.message = body.toString('utf8')
         }
@@ -148,10 +150,9 @@ export async function startRelay({ port = 0, host = '127.0.0.1', dir, publicURL 
   server.headersTimeout = 30_000
 
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve) })
-  const local = `http://${host}:${server.address().port}`
-  base ||= local
+  local = `http://${host}:${server.address().port}`
   return {
-    url: base,
+    get url() { return baseURL() },
     local,
     close() {
       clearInterval(compact)
