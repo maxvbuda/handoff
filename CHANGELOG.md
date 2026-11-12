@@ -7,6 +7,7 @@
 - **Ask Siri what's going on:** "Ask Handoff what's going on" says what each chat is working on, and Claude's suggestion.
 - **Smart Stack widget:** Claude's suggestion, or what your chats are working on, one scroll from the watch face.
 - Siri also answers to "Handoff" (it can't hear the hyphen in Hand-Off).
+- The send button shows its paper plane again on watchOS 26 (it was the same color as the button).
 
 ## 3.1.0 (2026-11-11), with Hand-Off 1.1
 

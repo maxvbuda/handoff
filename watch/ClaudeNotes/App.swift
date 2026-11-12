@@ -58,6 +58,8 @@ enum Theme: String, CaseIterable, Identifiable {
         case .graphite: Color(white: 0.62)
         }
     }
+    /// For an icon on a button filled with `color`: black on the light ones, white on the rest.
+    var onColor: Color { self == .yellow || self == .graphite ? .black : .white }
 }
 
 extension View {
@@ -1015,9 +1017,12 @@ struct EditorView: View {
             if !store.draft.isEmpty {
                 ToolbarItemGroup(placement: .bottomBar) {
                     Spacer()
+                    // The icon gets its own color: watchOS 26 draws it in the tint, the same color as
+                    // the button, so it vanished (watchOS 27 makes it white by itself).
                     Button(action: store.send) {
-                        Label("Send to Claude", systemImage: "paperplane.fill")
+                        Image(systemName: "paperplane.fill").foregroundStyle(theme.onColor)
                     }
+                    .accessibilityLabel("Send to Claude")
                     .tint(accent)
                 }
             }
