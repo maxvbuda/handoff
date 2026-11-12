@@ -17,6 +17,7 @@ Handoff has three parts: an Apple Watch app, the `handoff` command that runs on 
 - It passes each note to your Claude Code session. Claude Code then processes it under your Anthropic account, like anything you type into Claude Code. See [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
 - When Claude finishes a note, it records a short summary with Handoff's `watch_note_done` tool. The summary is saved in the same place, on your Mac only, and is never sent to the relay or anywhere else (except for notes you emailed; see below).
 - Claude can also include a one-line suggested next prompt. It's encrypted with the same key and sent through the relay to the watch, which shows it with an **Accept suggestion** button. Claude's response itself is never sent to the watch.
+- When Claude changes something you can look at, like a web page, it can also send a screenshot of it, which the watch shows above your notes. Claude takes the screenshot on your Mac, and it's encrypted with the same key. The watch keeps only the latest one, until you dismiss it.
 - Each Claude Code session started with `handoff start` sends the watch its chat name (your folder's name, or one you choose) about once a minute, encrypted, so the watch can list open chats. Notes you address to a chat carry that name too.
 
 ## What `handoff host` does (optional)
@@ -45,6 +46,7 @@ All of it is encrypted with your key, so ntfy.sh can't read any of it:
 | --- | --- | --- |
 | `cw-…` | watch → Mac | your notes, and the chat each is for |
 | `cw-…-s` | Mac → watch | Claude's suggested next prompt |
+| `cw-…-i` | Mac → watch | a screenshot of what Claude changed, when it sends one |
 | `cw-…-c` | Mac → watch | open chat names, the note each is working on, and each chat folder's git branch, number of changed files and unpushed commits (never file names or contents); the host's chat names and top-level folder names |
 | `cw-…-p` | Mac → watch | permission prompts from `handoff start` sessions: the tool's name and what it wants to do (for example the command it would run) |
 | `cw-…-v` | watch → Mac | your answer to a permission prompt: allow or deny |
@@ -56,8 +58,8 @@ All of it is encrypted with your key, so ntfy.sh can't read any of it:
 
 - **On your Mac:** notes, Claude's summaries, and host chat logs stay in `~/.claude-watch-notes/` until you delete them.
 - **In your email (`handoff mail` only):** the notes you emailed and Claude's replies stay in your mailbox until you delete them.
-- **On the watch:** up to 12 notes of history (until you delete them in Settings), your draft, the last suggestion, and your chosen chat.
-- **On the relay (ntfy.sh):** encrypted messages for up to about 12 hours, and file attachments (notes of 4 KB or more) for about 3 hours.
+- **On the watch:** up to 12 notes of history (until you delete them in Settings), your draft, the last suggestion and screenshot, and your chosen chat. The Smart Stack widget keeps a copy of the suggestion and what each chat is working on, on the watch only.
+- **On the relay (ntfy.sh):** encrypted messages for up to about 12 hours, and file attachments (notes and screenshots of 4 KB or more) for about 3 hours.
 - **By the developer:** nothing, because no data ever reaches the developer.
 
 ## What we collect

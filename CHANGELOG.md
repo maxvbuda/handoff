@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.0 (2026-11-11), with Hand-Off 1.2
+
+- **See what Claude built:** when Claude changes something you can look at, like a web page, it sends a screenshot to the watch. Tap it to see it full screen, and tap again to zoom in. `handoff done` takes `--image FILE` too.
+- **Siri picks the chat:** "Tell Handoff in website" sends the note to that chat.
+- **Ask Siri what's going on:** "Ask Handoff what's going on" says what each chat is working on, and Claude's suggestion.
+- **Smart Stack widget:** Claude's suggestion, or what your chats are working on, one scroll from the watch face.
+- Siri also answers to "Handoff" (it can't hear the hyphen in Hand-Off).
+
 ## 3.1.0 (2026-11-11), with Hand-Off 1.1
 
 - **Pairing goes the other way:** Hand-Off shows a code, and you type it on the Mac with `handoff pair CODE` (or run `handoff pair` and type it when asked). Press Return instead to pair a watch still on Hand-Off 1.0, which asks you for a code. Pairing follows the relay as a stream instead of polling it, so it's quicker and stays under ntfy.sh's rate limit.

@@ -1,11 +1,14 @@
 import CryptoKit
+import AppIntents
 import SwiftUI
 import WatchKit
+import WidgetKit
 
 // Jot ideas on your wrist; Claude Code does them while you're away.
 // By design there is no response view: you get a haptic and a checkmark, nothing to read.
-// What comes back is Claude's suggested next prompt, which you can accept with a tap, and
-// permission prompts from `handoff start` chats, which you can allow or deny.
+// What comes back is Claude's suggested next prompt, which you can accept with a tap, a
+// screenshot when Claude changed something you can look at, and permission prompts from
+// `handoff start` chats, which you can allow or deny.
 
 @main
 struct ClaudeNotesApp: App {
@@ -127,6 +130,13 @@ struct Suggestion: Codable, Equatable {
     var chat: String? = nil // the chat that suggested it; accepting sends it back there
 }
 
+/// A screenshot Claude sent when it finished a note (watch_note_done's `image`). The picture
+/// itself is kept in a file (Store.screenshotFile), since it's too big for UserDefaults.
+struct Screenshot: Codable, Equatable {
+    let id: String // relay message id
+    var chat: String? = nil
+}
+
 /// A permission prompt from a `handoff start` chat: Claude wants to use a tool and is waiting for
 /// a yes or no, here or in the terminal (whichever comes first counts).
 struct Approval: Codable, Identifiable, Equatable {
@@ -169,11 +179,12 @@ struct ChatStatus: Equatable {
     var ahead = 0
 }
 
-/// What the Mac posts back, sealed: suggestions on "<topic>-s"; on "<topic>-c", chat heartbeats
+/// What the Mac posts back, sealed: suggestions on "<topic>-s", screenshots on "<topic>-i"; on "<topic>-c", chat heartbeats
 /// and `handoff host`'s list of projects new chats can start in, plus each chat's status
 /// (`working`, and `repo` messages with git status); permission prompts on "<topic>-p".
 private struct BackMessage: Decodable {
     var s: String?
+    var i: String? // screenshot, base64 PNG or JPEG
     var chat: String?
     var host: String?
     var root: String?
@@ -207,9 +218,23 @@ final class Store {
             else { suggestion = nil }
         }
     }
-    var suggestion: Suggestion? { didSet { defaults.set(try? JSONEncoder().encode(suggestion), forKey: "suggestion") } }
+    var suggestion: Suggestion? {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(suggestion), forKey: "suggestion")
+            saveWidget()
+        }
+    }
+    /// The last screenshot a chat sent, until it's dismissed or a newer one comes.
+    private(set) var screenshot: Screenshot?
+    private(set) var screenshotImage: UIImage?
+    static let screenshotFile = URL.cachesDirectory.appending(path: "screenshot")
     /// Open Claude Code chats (`handoff start` sessions), by name.
-    private(set) var chats: [String] = []
+    private(set) var chats: [String] = [] {
+        didSet {
+            HandOffShortcuts.updateAppShortcutParameters() // Siri learns the new chat names
+            saveWidget()
+        }
+    }
     /// Projects `handoff host` can start a new chat in (empty when it isn't running).
     private(set) var projects: [String] = []
     /// Chats `handoff host` runs, which it can open on the Mac (Open on computer).
@@ -219,7 +244,7 @@ final class Store {
     /// Chats we asked the host to start that haven't announced themselves yet.
     private(set) var starting: Set<String> = []
     /// What each open chat is doing, by name.
-    private(set) var status: [String: ChatStatus] = [:]
+    private(set) var status: [String: ChatStatus] = [:] { didSet { saveWidget() } }
     /// Recurring tasks. The Mac gets the whole list whenever it changes.
     var schedules: [Recurring] {
         didSet {
@@ -251,6 +276,11 @@ final class Store {
         suggestionsOn = defaults.object(forKey: "suggestionsOn") as? Bool ?? true
         suggestion = (defaults.data(forKey: "suggestion")).flatMap { try? JSONDecoder().decode(Suggestion.self, from: $0) }
         target = defaults.string(forKey: "target")
+        if let saved = (defaults.data(forKey: "screenshot")).flatMap({ try? JSONDecoder().decode(Screenshot.self, from: $0) }),
+           let image = (try? Data(contentsOf: Self.screenshotFile)).flatMap(UIImage.init(data:)) {
+            screenshot = saved
+            screenshotImage = image
+        }
         schedules = (defaults.data(forKey: "schedules")).flatMap { try? JSONDecoder().decode([Recurring].self, from: $0) } ?? []
         #if targetEnvironment(simulator)
         if defaults.bool(forKey: "resetPairing") { setPairing(nil) } // UI tests start unpaired
@@ -264,12 +294,12 @@ final class Store {
         enqueue(text, to: target)
     }
 
-    /// Siri's Tell Claude: queues the note for the chosen chat and tries to send it now.
-    /// Returns whether it reached the relay.
-    func sendFromSiri(_ text: String) async -> Bool {
+    /// Siri's Tell Claude: queues the note for `chat` (default: the chosen chat) and tries to send
+    /// it now. Returns whether it reached the relay.
+    func sendFromSiri(_ text: String, to chat: String? = nil) async -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return false }
-        enqueue(t, to: target)
+        enqueue(t, to: chat ?? target)
         await flush()
         return pending == 0
     }
@@ -309,7 +339,8 @@ final class Store {
             async let c: Void = checkChats()
             async let s: Void = checkSuggestion()
             async let a: Void = checkApprovals()
-            _ = await (c, s, a)
+            async let i: Void = checkScreenshot()
+            _ = await (c, s, a, i)
         }
         refreshing = task
         await task.value
@@ -521,6 +552,72 @@ final class Store {
         }
     }
 
+    /// Picks up the newest screenshot a chat posted to "<topic>-i" since we last looked. They're too
+    /// big for a relay message, so each is an attachment (kept about 3 hours) that we download.
+    func checkScreenshot() async {
+        guard let pairing else { return }
+        let since = defaults.string(forKey: "screenshotSince") ?? "3h"
+        let url = URL(string: "\(pairing.topicURL.absoluteString)-i/json?poll=1&since=\(since)")!
+        guard let (data, _) = try? await Relay.session.data(from: url),
+              self.pairing?.topicURL == pairing.topicURL else { return }
+        let key = SymmetricKey(data: pairing.key)
+        let events = data.split(separator: UInt8(ascii: "\n")).compactMap { try? JSONDecoder().decode(Ntfy.Event.self, from: $0) }
+        // Newest first: only the latest one is shown, so older ones needn't be downloaded.
+        for ev in events.reversed() {
+            guard let id = ev.id else { continue }
+            var sealed = ev.message
+            if let a = ev.attachment, (a.size ?? 0) <= 1_000_000, let u = URL(string: a.url) {
+                // Not downloaded (offline, or it expired): try again next time, unless it's gone for good.
+                guard let (file, res) = try? await Relay.session.data(from: u) else { return }
+                sealed = (res as? HTTPURLResponse)?.statusCode == 200 ? String(data: file, encoding: .utf8) : nil
+            }
+            guard self.pairing?.topicURL == pairing.topicURL else { return }
+            if let box = sealed.flatMap({ Data(base64Encoded: $0) }),
+               let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: key),
+               let body = try? JSONDecoder().decode(BackMessage.self, from: plain),
+               let bytes = body.i.flatMap({ Data(base64Encoded: $0) }), let image = UIImage(data: bytes) {
+                try? bytes.write(to: Self.screenshotFile)
+                screenshot = Screenshot(id: id, chat: body.chat)
+                screenshotImage = image
+                defaults.set(try? JSONEncoder().encode(screenshot), forKey: "screenshot")
+                Haptic.play(.notification)
+                break
+            }
+        }
+        if let last = events.last?.id { defaults.set(last, forKey: "screenshotSince") }
+    }
+
+    /// Saves what the Smart Stack widget shows and asks it to redraw, when that changed.
+    private func saveWidget() {
+        let working = chats.compactMap { name in status[name]?.working.map { WidgetState.Work(chat: name, note: $0) } }
+        var state = WidgetState(suggestion: suggestion?.text, suggestionChat: suggestion?.chat, working: working, chats: chats.count)
+        if let old = WidgetState.load() {
+            state.updated = old.updated
+            if old == state { return } // `updated` only changes with the contents
+        }
+        state.updated = .now
+        state.save()
+        WidgetCenter.shared.reloadTimelines(ofKind: "Status")
+    }
+
+    /// What Siri says when asked what's going on: each open chat's note, or that it's free.
+    func spokenStatus() -> String {
+        guard pairing != nil else { return String(localized: "Open Hand-Off and pair it with your Mac first.") }
+        guard !chats.isEmpty else { return String(localized: "No chats are open. Start one on your Mac with handoff start.") }
+        var lines = chats.map { name in
+            status[name]?.working.map { String(localized: "\(name) is working on: \($0)") } ?? String(localized: "\(name) is free.")
+        }
+        if let s = suggestion { lines.append(String(localized: "Claude suggests: \(s.text)")) }
+        return lines.joined(separator: "\n")
+    }
+
+    func dismissScreenshot() {
+        screenshot = nil
+        screenshotImage = nil
+        defaults.removeObject(forKey: "screenshot")
+        try? FileManager.default.removeItem(at: Self.screenshotFile)
+    }
+
     func setPairing(_ p: Pairing?) {
         // A send still trying the old pairing would hold up the queue: stop it, start over.
         sending?.cancel()
@@ -530,6 +627,7 @@ final class Store {
         status = [:]
         if !schedules.isEmpty { defaults.set(true, forKey: "schedulesUnsent") } // the new pairing's Mac needs the list
         suggestion = nil
+        dismissScreenshot()
         chats = []
         projects = []
         hostedChats = []
@@ -537,6 +635,7 @@ final class Store {
         approvals = []
         target = nil
         defaults.removeObject(forKey: "suggestionSince")
+        defaults.removeObject(forKey: "screenshotSince")
         Keychain.save(p.flatMap { try? JSONEncoder().encode($0) })
         if p != nil { Haptic.play(.success); Task { await flush() } }
     }
@@ -687,6 +786,11 @@ enum Ntfy {
     struct Event: Decodable {
         let id: String?
         let message: String?
+        var attachment: Attachment? = nil // bodies of 4 KB or more
+    }
+    struct Attachment: Decodable {
+        let url: String
+        let size: Int?
     }
 
     /// Seals with AES-GCM (nonce|ciphertext|tag, base64) and posts to the topic.
@@ -801,6 +905,17 @@ struct EditorView: View {
         @Bindable var store = store
         List {
             ForEach(store.approvals) { a in ApprovalSection(approval: a) }
+
+            if let shot = store.screenshot, let image = store.screenshotImage {
+                Section(shot.chat.map { String(localized: "Screenshot · \($0)") } ?? String(localized: "Screenshot")) {
+                    NavigationLink { ScreenshotView(image: image) } label: {
+                        Image(uiImage: image).resizable().scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .accessibilityLabel("Screenshot")
+                    }
+                    .swipeActions { Button("Dismiss", role: .destructive) { store.dismissScreenshot() } }
+                }
+            }
 
             if let s = store.suggestion {
                 Section(s.chat.map { String(localized: "Suggestion · \($0)") } ?? String(localized: "Suggestion")) {
@@ -923,6 +1038,23 @@ struct EditorView: View {
 }
 
 /// A permission prompt: what Claude wants to do, and Allow / Deny. Tap the text to read all of it.
+/// A screenshot from Claude, filling the screen. Tap to zoom in, then drag around it.
+struct ScreenshotView: View {
+    let image: UIImage
+    @State private var zoomed = false
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView(zoomed ? [.horizontal, .vertical] : .vertical) {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .frame(width: geo.size.width * (zoomed ? 2.5 : 1))
+                    .onTapGesture { withAnimation { zoomed.toggle() } }
+            }
+        }
+        .navigationTitle("Screenshot")
+    }
+}
+
 struct ApprovalSection: View {
     let approval: Approval
     @Environment(Store.self) private var store

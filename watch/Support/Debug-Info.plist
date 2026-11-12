@@ -2,6 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Same as Info.plist: Siri also answers to "Tell Handoff". -->
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Handoff</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Hand Off</string>
+		</dict>
+	</array>
 	<!-- Debug only: lets tests talk to the mock relay on http://127.0.0.1 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

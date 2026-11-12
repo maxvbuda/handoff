@@ -1,8 +1,8 @@
 # Handoff for Claude Code
 
-[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-3.1.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
+[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-3.2.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
 
-Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only thing that comes back is Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**.
+Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only things that come back are Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**, and a screenshot when Claude changed something you can look at.
 
 ```
 Watch (dictate/scribble) ──AES-GCM──▶ ntfy topic ──▶ handoff plugin ──channel──▶ Claude Code session
@@ -28,7 +28,7 @@ npm install -g github:maxvbuda/handoff
 /plugin install handoff@handoff
 ```
 
-**3. Install the watch app**: the App Store listing is being prepared ([docs/app-store](docs/app-store/README.md)), which is also the only way onto a watch in Family Setup. Until then, build it yourself: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
+**3. Install the watch app**: open the App Store on your Apple Watch and search for **Hand-Off**. To build it yourself instead: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
 
 **4. Pair (once):** open Hand-Off on the watch. It shows a code like `K7QX-M2PA`; run `handoff pair` (or `/handoff:pair` inside Claude Code) and type it on the Mac. Hand-Off 1.0 works the other way around: press Return at the prompt, and `handoff pair` shows a code to type on the watch. The watch generates its own topic and key, sends them sealed with a key derived from the code, and waits for the Mac's acknowledgement. Nothing secret is built into the app, so one build works for anyone. Running Claude Code sessions pick up a new pairing automatically. To pair again, tap **Settings** at the bottom of the list, then **Unpair**.
 
@@ -62,6 +62,10 @@ On the watch, tap **Jot an idea…** and add as many lines as you like. Swipe a 
 
 When Claude finishes a note it can suggest a next step, like Claude Code's prompt suggestions. The suggestion shows at the top of the watch app. Tap **Accept suggestion** to send it to Claude as a new note, or swipe it away. To turn suggestions off, go to **Settings → Suggestions**.
 
+When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it. It shows at the top of the app; tap it to see it full screen, and tap again to zoom in.
+
+**Siri:** say "Tell Handoff" and Siri asks what Claude should do. "Tell Handoff in website" sends it to that chat. "Ask Handoff what's going on" reads out what each chat is working on. **Widgets:** add Hand-Off to a watch face to open it ready to dictate, or add **Claude's status** to the Smart Stack to see Claude's suggestion and what your chats are doing.
+
 When you get home, the work is done. Claude calls `watch_note_done` with a summary for each note; the summaries are in `~/.claude-watch-notes/notes/`. Notes that arrive while no session is running are handed to the next session that starts, exactly once even with several sessions open.
 
 ## Email (optional)
@@ -87,7 +91,7 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 ## Tests
 
 ```sh
-node --test test/server.test.mjs     # server: 53 tests against a mock relay (protocol, crypto, dedupe,
+node --test test/server.test.mjs     # server: 63 tests against a mock relay (protocol, crypto, dedupe,
                                      #   multi-session races, reconnects, stalls, re-pairing, pair command)
 node test/watch-e2e.mjs              # watch app in the SE 3 simulator + real pair/MCP server, via mock relay
 node test/watch-e2e.mjs --real-relay # same UI flow through the public ntfy.sh

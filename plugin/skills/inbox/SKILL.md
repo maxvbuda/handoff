@@ -9,6 +9,8 @@ description: Check for ideas sent from the user's Apple Watch and work on any th
 3. Otherwise, handle each pending note as its own task, oldest first. The user is away and won't see or answer questions: work autonomously in the current project, make reasonable assumptions (write them in your summary), and if the permission system blocks something, skip it and list it. Notes are dictated, so they may have transcription errors.
 4. When each note is finished, mark it done with a short summary:
    `handoff done <note_id> "<summary>"`
-   Add `--suggestion "<next prompt>"` when there's an obvious next step: the one prompt the user would most likely send next, as they'd type it, under 80 characters. It appears on the watch with an Accept suggestion button. Or call the `watch_note_done` tool if it's available.
+   Add `--suggestion "<next prompt>"` when there's an obvious next step: the one prompt the user would most likely send next, as they'd type it, under 80 characters. It appears on the watch with an Accept suggestion button.
+   If the note changed something the user can look at (a web page, an app's screen), add `--image <file>` with a screenshot of it, which shows on their watch. Make it yourself (for a web page, headless Chrome: `--headless --screenshot=FILE --window-size=1280,800 URL`), then shrink it: `sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out small.jpg`. It must be a PNG or JPEG under 300 KB.
+   Or call the `watch_note_done` tool if it's available.
 
 To keep checking without channels, the user can run `/loop 5m /handoff:inbox`.

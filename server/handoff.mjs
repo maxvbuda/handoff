@@ -2,8 +2,9 @@
 // handoff: zero-dependency MCP server + Claude Code channel.
 // Receives end-to-end encrypted ideas jotted on Apple Watch (relayed via ntfy)
 // and pushes them into the running Claude Code session. What goes back to the watch, encrypted
-// with the same key, is an optional one-line suggested next prompt and, in `handoff start`
-// sessions, permission prompts to answer from the wrist (never Claude's response).
+// with the same key, is an optional one-line suggested next prompt, an optional screenshot of what
+// Claude changed and, in `handoff start` sessions, permission prompts to answer from the wrist
+// (never Claude's response).
 //
 //   node handoff.mjs         # MCP server (Claude Code spawns this)
 //   node handoff.mjs pair CODE  # pair with the watch showing CODE
@@ -85,6 +86,7 @@ The user is away from the computer and will not see or answer questions: treat e
 If an action is blocked or denied by the permission system, do not retry it or look for a way around it: skip that step, finish what you can, and list what was blocked in your summary for the user to do when they get home.
 Claude's response is never sent to the watch. Every note must end with a call to watch_note_done with its note_id and a short summary, including quick questions (put the answer in the summary) and notes you decide not to act on. Answering in the terminal alone is not enough: the user isn't there, and watch_note_done is how the result is saved for them and how the suggestion reaches the watch.
 You may also pass a suggestion: the one prompt the user would most likely send next, written as the user would type it (under 80 characters, e.g. "add tests for the new parser"). It appears on the watch with an Accept suggestion button that sends it back to you as a new note. Leave it out when there's no obvious next step.
+When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. Leave it out when there's nothing to see.
 Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
 Notes with source="schedule" are recurring tasks the user set up on the watch; they come back on schedule, so do this run's work only.
 If you were not started as a channel, call watch_inbox to fetch pending notes.`
@@ -104,6 +106,7 @@ const TOOLS = [
         note_id: { type: 'string' },
         summary: { type: 'string' },
         suggestion: { type: 'string', description: 'Optional: the next prompt the user would most likely send, as they would type it (under 80 characters). Shown on the watch with an Accept suggestion button.' },
+        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG, under 300 KB; about 480 px wide is plenty). Shown on the watch.' },
       },
       required: ['note_id', 'summary'],
     },
@@ -132,6 +135,23 @@ async function postBack(suffix, obj, timeout = 20_000) {
   } catch { return false }
 }
 const sendSuggestion = (text, noteId) => postBack('s', { s: text, note: noteId, chat: NAME, ts: new Date().toISOString() })
+// Screenshots go on "<topic>-i". At this size the relay keeps each as an attachment (about 3 hours).
+const sendImage = (img, noteId) => postBack('i', { i: img.toString('base64'), note: noteId, chat: NAME, ts: new Date().toISOString() }, 60_000)
+
+// Claude makes the screenshot (this server runs nothing); we only check it's a small PNG or JPEG.
+const IMAGE_MAX = 300 * 1024
+function readImage(p) {
+  const f = path.resolve(p)
+  let st
+  try { st = fs.statSync(f) } catch { throw new Error(`Can't read the image ${f}. Nothing was marked done; try again with a screenshot that exists, or without image.`) }
+  if (!st.isFile()) throw new Error(`${f} isn't a file. Nothing was marked done.`)
+  if (st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
+  const b = fs.readFileSync(f)
+  const png = b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  const jpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
+  if (!png && !jpeg) throw new Error(`${f} isn't a PNG or JPEG. Nothing was marked done.`)
+  return b
+}
 
 // Listening sessions announce themselves every minute so the watch can list them by name.
 const HEARTBEAT_MS = Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000
@@ -219,16 +239,19 @@ async function callTool(name, args = {}) {
     const f = noteFile(String(args.note_id || ''))
     let n
     try { n = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { throw new Error(`No watch note with id ${args.note_id}`) }
+    const image = typeof args.image === 'string' && args.image.trim() ? readImage(args.image.trim()) : null // before anything is saved
     Object.assign(n, { status: 'done', summary: args.summary, doneAt: new Date().toISOString() })
     const suggestion = typeof args.suggestion === 'string' ? args.suggestion.trim().slice(0, 200) : ''
     if (suggestion) n.suggestion = suggestion
     writeAtomic(f, JSON.stringify(n, null, 2))
     if (CHANNEL && ready) beatSoon() // not working on it anymore
     if (n.source === 'email') return `Marked ${n.id} done. \`handoff mail\` will email the summary back.`
-    if (!suggestion) return `Marked ${n.id} done.`
-    return await sendSuggestion(suggestion, n.id)
-      ? `Marked ${n.id} done. Suggestion sent to the watch.`
-      : `Marked ${n.id} done. The suggestion couldn't be sent to the watch (relay unreachable).`
+    const said = [`Marked ${n.id} done.`]
+    if (suggestion) said.push(await sendSuggestion(suggestion, n.id)
+      ? 'Suggestion sent to the watch.' : "The suggestion couldn't be sent to the watch (relay unreachable).")
+    if (image) said.push(await sendImage(image, n.id)
+      ? 'Screenshot sent to the watch.' : "The screenshot couldn't be sent to the watch (relay unreachable).")
+    return said.join(' ')
   }
   throw new Error(`unknown tool: ${name}`)
 }
@@ -239,7 +262,7 @@ function handle(msg) {
     return out({ id, result: {
       protocolVersion: params?.protocolVersion || '2025-06-18',
       capabilities: { tools: {}, experimental: { 'claude/channel': {}, ...(CHANNEL && { 'claude/channel/permission': {} }) } },
-      serverInfo: { name: 'handoff', version: '3.1.0' },
+      serverInfo: { name: 'handoff', version: '3.2.0' },
       instructions: INSTRUCTIONS,
     } })
   }

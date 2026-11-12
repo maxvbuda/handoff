@@ -1,7 +1,7 @@
 {
   "name": "handoff",
   "displayName": "Handoff",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Jot ideas on your Apple Watch and Claude Code works on them while you're away. Skills for the open-source handoff command (installed separately with npm). Notes are end-to-end encrypted.",
   "author": {
     "name": "Max Buda",

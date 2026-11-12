@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Siri can't hear the hyphen in Hand-Off, so it also answers to "Tell Handoff". -->
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Handoff</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Hand Off</string>
+		</dict>
+	</array>
+</dict>
+</plist>

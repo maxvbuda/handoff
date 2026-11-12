@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.1"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "1.2"
+    CURRENT_PROJECT_VERSION: "4"
     # Size/speed for SE 3 (S10, 40/44mm)
     SWIFT_OPTIMIZATION_LEVEL: -Osize
     SWIFT_COMPILATION_MODE: wholemodule
@@ -25,14 +25,19 @@ targets:
   ClaudeNotes:
     type: application
     platform: watchOS
-    sources: [ClaudeNotes]
+    sources: [ClaudeNotes, Shared]
     dependencies: [{ target: HandOffWidget }] # embedded, for the watch-face complication
+    entitlements: # shared with the widget, which shows what the app last saw (Shared/WidgetState.swift)
+      path: Support/ClaudeNotes.entitlements
+      properties:
+        com.apple.security.application-groups: [group.dev.maxbuda.handoff]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxbuda.ClaudeNotes.watchkitapp
         TARGETED_DEVICE_FAMILY: "4"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Support/Info.plist # Siri's alternative names (Handoff)
         INFOPLIST_KEY_CFBundleDisplayName: Hand-Off
         INFOPLIST_KEY_WKWatchOnly: YES
         INFOPLIST_KEY_WKApplication: YES
@@ -44,11 +49,16 @@ targets:
       configs:
         Debug:
           INFOPLIST_FILE: Support/Debug-Info.plist
-  # The watch-face complication. It only opens the app, so it shares no data with it.
+  # The watch-face complication, which only opens the app, and the Smart Stack widget, which shows
+  # Claude's suggestion and what the chats are doing, as the app saved them in the App Group.
   HandOffWidget:
     type: app-extension
     platform: watchOS
-    sources: [HandOffWidget]
+    sources: [HandOffWidget, Shared]
+    entitlements:
+      path: Support/HandOffWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [group.dev.maxbuda.handoff]
     info:
       path: HandOffWidget/Info.plist
       properties:

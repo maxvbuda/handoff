@@ -250,6 +250,35 @@ describe('delivery', () => {
     assert.equal(saved.suggestion, 'add tests for it')
   })
 
+  test('watch_note_done sends an encrypted screenshot to <topic>-i, as a relay attachment', async () => {
+    const n = note('make the button blue')
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const img = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(20_000)])
+    const file = path.join(dir, 'shot.jpg')
+    fs.writeFileSync(file, img)
+    const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
+    assert.match(r.result.content[0].text, /Screenshot sent/)
+    const [ev] = (await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').map(l => JSON.parse(l))
+    assert.ok(ev.attachment) // too big for a message
+    const got = openBox(await (await fetch(ev.attachment.url)).text(), cfg.key)
+    assert.ok(Buffer.from(got.i, 'base64').equals(img)); assert.equal(got.note, n.id)
+  })
+
+  test('watch_note_done refuses a screenshot that is too big or not an image, and leaves the note open', async () => {
+    const n = note('bad image')
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    for (const [name, bytes, why] of [['big.png', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(400_000)]), /under 300 KB/],
+      ['notes.txt', Buffer.from('hello'), /isn't a PNG or JPEG/], ['missing.jpg', null, /Can't read/]]) {
+      const file = path.join(dir, name)
+      if (bytes) fs.writeFileSync(file, bytes)
+      const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
+      assert.equal(r.result.isError, true); assert.match(r.result.content[0].text, why)
+    }
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'notes', `${n.id}.json`), 'utf8')).status !== 'done', true)
+  })
+
   test('a burst of 30 notes all arrive, in order', async () => {
     const ns = Array.from({ length: 30 }, (_, i) => note(`burst ${i}`))
     for (const n of ns) await post(cfg.topicURL, seal(n, cfg.key))

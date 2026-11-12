@@ -8,7 +8,7 @@
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
 //   handoff mail [address]    email Claude too, through the Mail app
 //   handoff inbox             print notes that aren't done (what /handoff:inbox runs)
-//   handoff done <id> <summary> [--suggestion S]   mark a note done
+//   handoff done <id> <summary> [--suggestion S] [--image FILE]   mark a note done
 
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -88,11 +88,12 @@ if (cmd === 'start') {
 } else if (cmd === 'inbox') {
   toolCall('watch_inbox', {}, 3000)
 } else if (cmd === 'done') {
-  const i = rest.indexOf('--suggestion')
-  const suggestion = i >= 0 ? rest.splice(i, 2)[1] : undefined
+  const flag = name => { const i = rest.indexOf(name); return i >= 0 ? rest.splice(i, 2)[1] : undefined }
+  const suggestion = flag('--suggestion')
+  const image = flag('--image')
   const [noteId, ...summary] = rest
-  if (!noteId || !summary.length) { console.error('Usage: handoff done <note_id> <summary> [--suggestion "next prompt"]'); process.exit(1) }
-  toolCall('watch_note_done', { note_id: noteId, summary: summary.join(' '), ...(suggestion && { suggestion }) })
+  if (!noteId || !summary.length) { console.error('Usage: handoff done <note_id> <summary> [--suggestion "next prompt"] [--image screenshot.jpg]'); process.exit(1) }
+  toolCall('watch_note_done', { note_id: noteId, summary: summary.join(' '), ...(suggestion && { suggestion }), ...(image && { image: path.resolve(image) }) })
 } else {
   console.log(`Handoff: jot ideas on your Apple Watch; Claude Code does them while you're away.
 
@@ -108,8 +109,8 @@ if (cmd === 'start') {
                             as a reply. Uses the Mail app; keep this running. Only that
                             one account is listened to, and it's remembered for next time
   handoff inbox             Print the notes that aren't done yet (/handoff:inbox runs it)
-  handoff done <note_id> <summary> [--suggestion "next prompt"]
-                            Mark a note done (and send a suggestion to the watch)
+  handoff done <note_id> <summary> [--suggestion "next prompt"] [--image screenshot.jpg]
+                            Mark a note done (and send a suggestion or screenshot to the watch)
 `)
 }
 
@@ -415,7 +416,8 @@ function host(root) {
     const prompt = `${n.text}\n\n---\nThis is a note the user jotted on their Apple Watch (note_id=${n.id}). They are away and ` +
       'will not see or answer questions: do it autonomously in this project, making reasonable assumptions. If an action is ' +
       `blocked by the permission system, skip it and mention it. When finished, call watch_note_done with note_id ${n.id}, ` +
-      'a short summary, and optionally a suggestion (the next prompt they would likely send).'
+      'a short summary, optionally a suggestion (the next prompt they would likely send) and, if it changed something ' +
+      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB).'
     const args = ['-p', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
       ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done',
       ...(chat.started ? ['--resume', chat.session] : ['--session-id', chat.session])]
