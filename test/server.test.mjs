@@ -265,12 +265,28 @@ describe('delivery', () => {
     assert.ok(Buffer.from(got.i, 'base64').equals(img)); assert.equal(got.note, n.id)
   })
 
+  test('watch_note_done sends a GIF clip bigger than a screenshot may be', async () => {
+    const n = note('gif')
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const gif = Buffer.concat([Buffer.from('GIF89a'), crypto.randomBytes(400_000)])
+    const file = path.join(dir, 'clip.gif')
+    fs.writeFileSync(file, gif)
+    const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
+    assert.match(r.result.content[0].text, /Screenshot sent/)
+    const ev = (await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').map(l => JSON.parse(l)).pop()
+    assert.ok(ev.attachment.size < 1_000_000) // the watch downloads up to 1 MB
+    assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(gif))
+  })
+
   test('watch_note_done refuses a screenshot that is too big or not an image, and leaves the note open', async () => {
     const n = note('bad image')
     await post(cfg.topicURL, seal(n, cfg.key))
     await s.waitFor(pushFor(n.id))
     for (const [name, bytes, why] of [['big.png', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(400_000)]), /under 300 KB/],
-      ['notes.txt', Buffer.from('hello'), /isn't a PNG or JPEG/], ['missing.jpg', null, /Can't read/]]) {
+      ['big.gif', Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(600_000)]), /under 500 KB/],
+      ['clip.mp4', Buffer.from('\0\0\0\x20ftypisom'), /isn't a PNG, JPEG or GIF/],
+      ['notes.txt', Buffer.from('hello'), /isn't a PNG, JPEG or GIF/], ['missing.jpg', null, /Can't read/]]) {
       const file = path.join(dir, name)
       if (bytes) fs.writeFileSync(file, bytes)
       const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })

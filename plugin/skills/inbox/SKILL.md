@@ -10,7 +10,7 @@ description: Check for ideas sent from the user's Apple Watch and work on any th
 4. When each note is finished, mark it done with a short summary:
    `handoff done <note_id> "<summary>"`
    Add `--suggestion "<next prompt>"` when there's an obvious next step: the one prompt the user would most likely send next, as they'd type it, under 80 characters. It appears on the watch with an Accept suggestion button.
-   If the note changed something the user can look at (a web page, an app's screen), add `--image <file>` with a screenshot of it, which shows on their watch. Make it yourself (for a web page, headless Chrome: `--headless --screenshot=FILE --window-size=1280,800 URL`), then shrink it: `sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out small.jpg`. It must be a PNG or JPEG under 300 KB.
+   If the note changed something the user can look at (a web page, an app's screen), add `--image <file>` with a screenshot of it, which shows on their watch. Make it yourself (for a web page, headless Chrome: `--headless --screenshot=FILE --window-size=1280,800 URL`), then shrink it: `sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out small.jpg`. It must be a PNG or JPEG under 300 KB. If it moves (a game, an animation), send a short GIF instead, under 500 KB: record a video (.mp4 or .mov), then `ffmpeg -y -t 6 -i VIDEO -vf "fps=8,scale=320:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse" clip.gif` (lower fps, scale or -t if it's too big).
    Or call the `watch_note_done` tool if it's available.
 
 To keep checking without channels, the user can run `/loop 5m /handoff:inbox`.

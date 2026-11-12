@@ -2,7 +2,7 @@
 // handoff: zero-dependency MCP server + Claude Code channel.
 // Receives end-to-end encrypted ideas jotted on Apple Watch (relayed via ntfy)
 // and pushes them into the running Claude Code session. What goes back to the watch, encrypted
-// with the same key, is an optional one-line suggested next prompt, an optional screenshot of what
+// with the same key, is an optional one-line suggested next prompt, an optional screenshot (or GIF) of what
 // Claude changed and, in `handoff start` sessions, permission prompts to answer from the wrist
 // (never Claude's response).
 //
@@ -86,7 +86,7 @@ The user is away from the computer and will not see or answer questions: treat e
 If an action is blocked or denied by the permission system, do not retry it or look for a way around it: skip that step, finish what you can, and list what was blocked in your summary for the user to do when they get home.
 Claude's response is never sent to the watch. Every note must end with a call to watch_note_done with its note_id and a short summary, including quick questions (put the answer in the summary) and notes you decide not to act on. Answering in the terminal alone is not enough: the user isn't there, and watch_note_done is how the result is saved for them and how the suggestion reaches the watch.
 You may also pass a suggestion: the one prompt the user would most likely send next, written as the user would type it (under 80 characters, e.g. "add tests for the new parser"). It appears on the watch with an Accept suggestion button that sends it back to you as a new note. Leave it out when there's no obvious next step.
-When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. Leave it out when there's nothing to see.
+When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. To show something moving (a game, an animation), pass a short GIF instead, under 500 KB: record a video of it (an .mp4 or .mov, for example with Playwright's recordVideo or \`screencapture -v -V 5 FILE.mov\`), then turn it into a GIF with \`ffmpeg -y -t 6 -i VIDEO -vf "fps=8,scale=320:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse" CLIP.gif\` (if it's too big, lower fps, scale or -t). Leave it out when there's nothing to see.
 Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
 Notes with source="schedule" are recurring tasks the user set up on the watch; they come back on schedule, so do this run's work only.
 If you were not started as a channel, call watch_inbox to fetch pending notes.`
@@ -106,7 +106,7 @@ const TOOLS = [
         note_id: { type: 'string' },
         summary: { type: 'string' },
         suggestion: { type: 'string', description: 'Optional: the next prompt the user would most likely send, as they would type it (under 80 characters). Shown on the watch with an Accept suggestion button.' },
-        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG, under 300 KB; about 480 px wide is plenty). Shown on the watch.' },
+        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or a short GIF of something moving (under 500 KB, made from a video with ffmpeg). Shown on the watch.' },
       },
       required: ['note_id', 'summary'],
     },
@@ -138,18 +138,22 @@ const sendSuggestion = (text, noteId) => postBack('s', { s: text, note: noteId, 
 // Screenshots go on "<topic>-i". At this size the relay keeps each as an attachment (about 3 hours).
 const sendImage = (img, noteId) => postBack('i', { i: img.toString('base64'), note: noteId, chat: NAME, ts: new Date().toISOString() }, 60_000)
 
-// Claude makes the screenshot (this server runs nothing); we only check it's a small PNG or JPEG.
-const IMAGE_MAX = 300 * 1024
+// Claude makes the screenshot (this server runs nothing); we only check it's a small PNG, JPEG or
+// GIF. A GIF (a clip Claude turned from a video) may be bigger, but sealed it must stay under the
+// watch's 1 MB download limit.
+const IMAGE_MAX = 300 * 1024, GIF_MAX = 500 * 1024
 function readImage(p) {
   const f = path.resolve(p)
   let st
   try { st = fs.statSync(f) } catch { throw new Error(`Can't read the image ${f}. Nothing was marked done; try again with a screenshot that exists, or without image.`) }
   if (!st.isFile()) throw new Error(`${f} isn't a file. Nothing was marked done.`)
-  if (st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
+  if (st.size > GIF_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB (a GIF, under 500 KB). Nothing was marked done. Shrink it and try again.`)
   const b = fs.readFileSync(f)
   const png = b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   const jpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
-  if (!png && !jpeg) throw new Error(`${f} isn't a PNG or JPEG. Nothing was marked done.`)
+  const gif = ['GIF87a', 'GIF89a'].includes(b.subarray(0, 6).toString('latin1'))
+  if (!png && !jpeg && !gif) throw new Error(`${f} isn't a PNG, JPEG or GIF. Nothing was marked done. To send a video, turn it into a GIF with ffmpeg first.`)
+  if (!gif && st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
   return b
 }
 

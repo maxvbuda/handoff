@@ -121,7 +121,7 @@ if (cmd === 'start') {
                             one account is listened to, and it's remembered for next time
   handoff inbox             Print the notes that aren't done yet (/handoff:inbox runs it)
   handoff done <note_id> <summary> [--suggestion "next prompt"] [--image screenshot.jpg]
-                            Mark a note done (and send a suggestion or screenshot to the watch)
+                            Mark a note done (and send a suggestion, screenshot or GIF to the watch)
 `)
 }
 
@@ -428,7 +428,7 @@ function host(root) {
       'will not see or answer questions: do it autonomously in this project, making reasonable assumptions. If an action is ' +
       `blocked by the permission system, skip it and mention it. When finished, call watch_note_done with note_id ${n.id}, ` +
       'a short summary, optionally a suggestion (the next prompt they would likely send) and, if it changed something ' +
-      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB).'
+      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of a short GIF made from a video with ffmpeg if it moves (under 500 KB).'
     const args = ['-p', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
       ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done',
       ...(chat.started ? ['--resume', chat.session] : ['--session-id', chat.session])]

@@ -62,7 +62,7 @@ On the watch, tap **Jot an idea…** and add as many lines as you like. Swipe a 
 
 When Claude finishes a note it can suggest a next step, like Claude Code's prompt suggestions. The suggestion shows at the top of the watch app. Tap **Accept suggestion** to send it to Claude as a new note, or swipe it away. To turn suggestions off, go to **Settings → Suggestions**.
 
-When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it. It shows at the top of the app; tap it to see it full screen, and tap again to zoom in.
+When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it, or a short **GIF** made from a video when it moves (Claude records the video and turns it into a GIF with ffmpeg). It shows at the top of the app; tap it to see it full screen, and tap again to zoom in.
 
 **Siri:** say "Tell Handoff" and Siri asks what Claude should do. "Tell Handoff in website" sends it to that chat. "Ask Handoff what's going on" reads out what each chat is working on. **Widgets:** add Hand-Off to a watch face to open it ready to dictate, or add **Claude's status** to the Smart Stack to see Claude's suggestion and what your chats are doing.
 
@@ -91,7 +91,7 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 ## Tests
 
 ```sh
-node --test test/server.test.mjs     # server: 63 tests against a mock relay (protocol, crypto, dedupe,
+node --test test/server.test.mjs     # server: 65 tests against a mock relay (protocol, crypto, dedupe,
                                      #   multi-session races, reconnects, stalls, re-pairing, pair command)
 node test/watch-e2e.mjs              # watch app in the SE 3 simulator + real pair/MCP server, via mock relay
 node test/watch-e2e.mjs --real-relay # same UI flow through the public ntfy.sh
