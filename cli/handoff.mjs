@@ -688,12 +688,22 @@ function startAgent(label, args, logFile) {
 </dict></plist>
 `)
   stopAgent(label, false)
-  execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistFor(label)])
+  // launchd can still be finishing the old one ("Bootstrap failed: 5: Input/output error"): try again.
+  for (let i = 0; ; i++) {
+    try { execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistFor(label)], { stdio: 'pipe' }); return } catch (e) {
+      if (i >= 9) throw new Error(`macOS wouldn't start ${label}: ${String(e.stderr).trim()}`)
+      sleepSync(1000)
+    }
+  }
 }
+// Stops a login item and waits until launchd has let go of it.
 function stopAgent(label, remove = true) {
   try { execFileSync('launchctl', ['bootout', `gui/${process.getuid()}/${label}`], { stdio: 'ignore' }) } catch {}
+  for (let i = 0; i < 20 && loaded(label); i++) sleepSync(500)
   if (remove) fs.rmSync(plistFor(label), { force: true })
 }
+const loaded = label => { try { execFileSync('launchctl', ['print', `gui/${process.getuid()}/${label}`], { stdio: 'ignore' }); return true } catch { return false } }
+const sleepSync = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 async function relay(sub) {
   const settings = readRelaySettings()
