@@ -658,7 +658,8 @@ const plistFor = label => path.join(os.homedir(), 'Library/LaunchAgents', `${lab
 const readRelaySettings = () => { try { return JSON.parse(fs.readFileSync(OWN_RELAY, 'utf8')) } catch { return {} } }
 
 function zrok() {
-  for (const z of ['zrok', '/opt/homebrew/bin/zrok', '/usr/local/bin/zrok']) {
+  // zrok 2 is `zrok2` from zrok's own installer and `zrok` from Homebrew.
+  for (const z of ['zrok2', 'zrok', '/opt/homebrew/bin/zrok2', '/opt/homebrew/bin/zrok', '/usr/local/bin/zrok2', '/usr/local/bin/zrok']) {
     try { execFileSync(z, ['version'], { stdio: 'ignore' }); return z } catch {}
   }
   return null
@@ -729,7 +730,7 @@ async function relay(sub) {
   try { execFileSync(z, ['overview'], { stdio: 'ignore' }) } catch {
     console.error('zrok needs a free account first:\n' +
       '  1. Sign up at https://myzrok.io and open the zrok console there.\n' +
-      '  2. Copy your account token and run: zrok enable YOUR_TOKEN\n' +
+      `  2. Copy your account token and run: ${path.basename(z)} enable YOUR_TOKEN\n` +
       '  3. Run handoff relay setup again.')
     process.exit(1)
   }
