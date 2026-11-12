@@ -4,6 +4,7 @@
 // (server/handoff.mjs) for the Claude Code sessions it opens.
 //
 //   handoff pair [CODE]       pair your watch (type the code it shows)
+//   handoff unpair            forget the watch this Mac is paired with
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
 //   handoff mail [address]    email Claude too, through the Mail app
@@ -81,6 +82,15 @@ if (cmd === 'start') {
   }
   if (code) run(process.execPath, [SERVER, 'pair', code], { stdio: 'inherit' })
   else pairShowingCode()
+} else if (cmd === 'unpair') {
+  // Forgets the pairing key. Running chats and the host see it go (they watch the file) and stop
+  // listening. Notes and their summaries stay; so do the cursors, which only apply to that pairing.
+  if (!readConfig()) console.log('Not paired.')
+  else {
+    fs.rmSync(CONFIG, { force: true })
+    console.log('Unpaired. This Mac no longer gets notes from your watch. Your notes are still in ~/.claude-watch-notes.\n' +
+      'On the watch, tap Settings, then Unpair. To pair again, open Hand-Off and run: handoff pair CODE')
+  }
 } else if (cmd === 'host') {
   host(path.resolve(rest[0] || process.cwd()))
 } else if (cmd === 'mail') {
@@ -98,6 +108,7 @@ if (cmd === 'start') {
   console.log(`Handoff: jot ideas on your Apple Watch; Claude Code does them while you're away.
 
   handoff pair [CODE]       Pair your watch: type the code Hand-Off shows
+  handoff unpair            Forget the watch this Mac is paired with (your notes stay)
   handoff start [args...]   Start Claude Code listening for ideas (extra args go to claude,
                             e.g. --continue to keep your last conversation)
     --name <name>           The chat's name on the watch (default: this folder's name)

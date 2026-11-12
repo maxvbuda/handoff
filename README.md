@@ -30,7 +30,7 @@ npm install -g github:maxvbuda/handoff
 
 **3. Install the watch app**: open the App Store on your Apple Watch and search for **Hand-Off**. To build it yourself instead: `cd watch && xcodegen generate && open ClaudeNotes.xcodeproj`, pick your team, then Run.
 
-**4. Pair (once):** open Hand-Off on the watch. It shows a code like `K7QX-M2PA`; run `handoff pair` (or `/handoff:pair` inside Claude Code) and type it on the Mac. Hand-Off 1.0 works the other way around: press Return at the prompt, and `handoff pair` shows a code to type on the watch. The watch generates its own topic and key, sends them sealed with a key derived from the code, and waits for the Mac's acknowledgement. Nothing secret is built into the app, so one build works for anyone. Running Claude Code sessions pick up a new pairing automatically. To pair again, tap **Settings** at the bottom of the list, then **Unpair**.
+**4. Pair (once):** open Hand-Off on the watch. It shows a code like `K7QX-M2PA`; run `handoff pair` (or `/handoff:pair` inside Claude Code) and type it on the Mac. Hand-Off 1.0 works the other way around: press Return at the prompt, and `handoff pair` shows a code to type on the watch. The watch generates its own topic and key, sends them sealed with a key derived from the code, and waits for the Mac's acknowledgement. Nothing secret is built into the app, so one build works for anyone. Running Claude Code sessions pick up a new pairing automatically. To pair again, tap **Settings** at the bottom of the list, then **Unpair**. To make the Mac forget the watch, run `handoff unpair`.
 
 ## Use
 

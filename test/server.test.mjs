@@ -998,6 +998,18 @@ describe('inbox and done commands (/handoff:inbox without the plugin running a s
     p.on('exit', code => r({ code, out }))
   })
 
+  test('unpair forgets the pairing and keeps the notes', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-unpair-'))
+    fs.writeFileSync(path.join(d, 'config.json'), JSON.stringify({ topicURL: 'https://ntfy.sh/cw-x', key: 'a2V5' }))
+    fs.mkdirSync(path.join(d, 'notes')); fs.writeFileSync(path.join(d, 'notes', 'n1.json'), '{}')
+    let r = await run(['unpair'], { ...process.env, CLAUDE_WATCH_NOTES_DIR: d })
+    assert.match(r.out, /Unpaired/)
+    assert.equal(fs.existsSync(path.join(d, 'config.json')), false)
+    assert.equal(fs.existsSync(path.join(d, 'notes', 'n1.json')), true)
+    r = await run(['unpair'], { ...process.env, CLAUDE_WATCH_NOTES_DIR: d })
+    assert.match(r.out, /Not paired/)
+  })
+
   test('inbox fetches notes waiting on the relay; done marks one done and sends the suggestion', async () => {
     const dir = tmpDir(); const cfg = pairDir(dir)
     const env = { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_CHANNEL: '1' }
