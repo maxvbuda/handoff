@@ -1,6 +1,6 @@
 # Handoff for Claude Code
 
-[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-3.2.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
+[![Tests](https://github.com/maxvbuda/handoff/actions/workflows/test.yml/badge.svg)](https://github.com/maxvbuda/handoff/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Version](https://img.shields.io/badge/version-3.3.0-informational) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![watchOS](https://img.shields.io/badge/watchOS-26-black)
 
 Jot ideas on your Apple Watch. Claude Code works on them while you're away. **The watch never shows Claude's response**, so there's nothing to get pulled into. It's a scratchpad that hands off and goes quiet. The only things that come back are Claude's one-line suggestion for what to do next, which you can send with **Accept suggestion**, and a screenshot when Claude changed something you can look at.
 
@@ -62,7 +62,9 @@ On the watch, tap **Jot an idea…** and add as many lines as you like. Swipe a 
 
 When Claude finishes a note it can suggest a next step, like Claude Code's prompt suggestions. The suggestion shows at the top of the watch app. Tap **Accept suggestion** to send it to Claude as a new note, or swipe it away. To turn suggestions off, go to **Settings → Suggestions**.
 
-When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it, or a short **GIF** made from a video when it moves (Claude records the video and turns it into a GIF with ffmpeg), which plays on the watch. It shows at the top of the app; tap it to see it full screen, and tap again to zoom in.
+When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it, or a short full-quality **GIF** made from a video when it moves (Claude records the video and turns it into a GIF with ffmpeg), which plays on the watch. It shows at the top of the app; tap it to see it full screen, and tap again to zoom in. The watch keeps the last 5; tap **Save** on one to keep it for good, and **Ship it** to have Claude commit, push and deploy that work.
+
+When Claude reaches a choice only you can make, it can **ask you** on the watch: tap one of the answers. Under **Projects**, **Stop** halts the note a chat is working on, and **Ship it** appears on chats with changes to commit. **Quick reply** has one-tap notes; add your own there. Each evening at 6 PM, the watch shows a **recap** of the notes each chat finished that day.
 
 **Siri:** say "Tell Handoff" and Siri asks what Claude should do. "Tell Handoff in website" sends it to that chat. "Ask Handoff what's going on" reads out what each chat is working on. **Widgets:** add Hand-Off to a watch face to open it ready to dictate, or add **Claude's status** to the Smart Stack to see Claude's suggestion and what your chats are doing.
 
@@ -91,7 +93,7 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 ## Tests
 
 ```sh
-node --test test/server.test.mjs     # server: 65 tests against a mock relay (protocol, crypto, dedupe,
+node --test test/server.test.mjs     # server: 69 tests against a mock relay (protocol, crypto, dedupe,
                                      #   multi-session races, reconnects, stalls, re-pairing, pair command)
 node test/watch-e2e.mjs              # watch app in the SE 3 simulator + real pair/MCP server, via mock relay
 node test/watch-e2e.mjs --real-relay # same UI flow through the public ntfy.sh

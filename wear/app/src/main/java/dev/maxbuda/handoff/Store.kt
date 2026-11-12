@@ -109,7 +109,7 @@ object Store {
     var theme by mutableStateOf(Theme.Clay); private set
     var themedBackground by mutableStateOf(true); private set
 
-    const val CHAT_WINDOW = "3m" // chats announce themselves every minute
+    const val CHAT_WINDOW = "20m" // chats announce themselves when they change, and every 15 minutes
     const val APPROVAL_WINDOW = "10m" // older prompts have likely been answered at the Mac
     private const val KEEP = 12
     private val retryDelay = 15.seconds

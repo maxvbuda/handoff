@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, tryClaim, writeAtomic } from '../server/relay.mjs'
+import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, sendRecapIfDue, tryClaim, writeAtomic } from '../server/relay.mjs'
 
 const SERVER = fileURLToPath(new URL('../server/handoff.mjs', import.meta.url))
 
@@ -67,10 +67,11 @@ if (cmd === 'start') {
   const opts = { stdio: 'inherit', env: { ...process.env, CLAUDE_WATCH_NOTES_CHANNEL: '1', CLAUDE_WATCH_NOTES_NAME: name } }
   if (process.platform === 'darwin') run('caffeinate', ['-i', 'claude', ...claudeArgs], opts)
   else run('claude', claudeArgs, opts)
-  // The watch's Projects screen: this folder's git status, every minute while the chat is open.
-  const report = async () => postSide('c', { repo: name, ...(await gitStatus(process.cwd())) })
+  // The watch's Projects screen: this folder's git status while the chat is open, checked every
+  // minute and sent when it changes (or every 15 minutes).
+  const report = async () => postChanged(`repo ${name}`, { repo: name, ...(await gitStatus(process.cwd())) })
   report()
-  setInterval(report, Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000).unref()
+  setInterval(report, Number(process.env.CLAUDE_WATCH_NOTES_CHECK_MS) || 60_000).unref()
 } else if (cmd === 'pair') {
   // The watch shows a code to type here. With no code (pressing Return, or not at a terminal, like
   // the 1.0 /handoff:pair skill), show one to type on the watch instead, as Hand-Off 1.0 asks.
@@ -143,6 +144,18 @@ function postSide(suffix, obj, timeout = 20_000) {
   if (!cfg) return Promise.resolve()
   return fetch(`${cfg.topicURL}-${suffix}`, { method: 'POST', body: seal({ ...obj, ts: new Date().toISOString() }, Buffer.from(cfg.key, 'base64')), signal: AbortSignal.timeout(timeout) })
     .catch(() => {})
+}
+
+// Sends a status message when it differs from the last one sent under `key`, or that one is 15
+// minutes old. ntfy.sh limits messages per day for each home internet connection (a few hundred),
+// so status is sent on change rather than every minute. The watch counts a chat open for 20 minutes.
+// (The commands above run before this file's later lines, so the record lives on the function.)
+function postChanged(key, obj) {
+  const sent = postChanged.sent ??= new Map(), resend = Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 15 * 60_000
+  const json = JSON.stringify(obj), last = sent.get(key)
+  if (last && last.json === json && Date.now() - last.at < resend) return Promise.resolve()
+  sent.set(key, { json, at: Date.now() })
+  return postSide('c', obj)
 }
 
 // A folder's branch, how many files have changes, and how many commits aren't pushed yet
@@ -219,6 +232,7 @@ function sendToSimulators(code) {
 //   - answers {ls, id} requests on "<topic>-n" with {ls, id, dirs} on "<topic>-l" (folder browsing);
 //   - registers a chat for {path, name, create?} requests, and opens a Terminal window showing its log;
 //   - for {open} requests, opens that chat as a normal Claude Code window in Terminal (claude --resume);
+//   - for {stop} requests (Stop on the watch), stops the note that chat is running;
 //   - takes notes addressed to its chats from the main topic and runs them, one at a time per chat.
 // Paths are relative to `root`; anything that resolves outside it (.., symlinks) is refused.
 function host(root) {
@@ -256,14 +270,15 @@ function host(root) {
 
   const post = (obj, timeout = 20_000, suffix = 'c') => postSide(suffix, obj, timeout)
   // Also each chat's git status and the note it's working on, for the watch's Projects screen.
+  // Checked every minute, sent when it changes (or every 15 minutes): see postChanged.
   const announce = async () => {
-    await post({ host: hostName, root: path.basename(root), projects: projects(), chats: recentChats() })
+    await postChanged('host', { host: hostName, root: path.basename(root), projects: projects(), chats: recentChats() })
     for (const n of recentChats()) {
-      if (fs.existsSync(chats[n].dir)) post({ repo: n, working: busy.get(n), ...(await gitStatus(chats[n].dir)) })
+      if (fs.existsSync(chats[n].dir)) postChanged(`repo ${n}`, { repo: n, working: busy.get(n), ...(await gitStatus(chats[n].dir)) })
     }
   }
   const busy = new Map() // chat -> the note it's running
-  setInterval(announce, Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000)
+  setInterval(announce, Number(process.env.CLAUDE_WATCH_NOTES_CHECK_MS) || 60_000)
   const quit = async () => { await post({ host: hostName, gone: true }, 3000); process.exit(0) }
   process.on('SIGINT', quit)
   process.on('SIGTERM', quit)
@@ -276,7 +291,7 @@ function host(root) {
   // Relay subscriptions: reconnect with backoff, and restart with the new key when re-paired.
   const subs = new Set()
   // Re-paired: follow the new topic, and show the projects on the watch right away.
-  fs.watchFile(CONFIG, { interval: 2000 }, () => { subs.forEach(c => c.abort()); announce() })
+  fs.watchFile(CONFIG, { interval: 2000 }, () => { subs.forEach(c => c.abort()); postChanged.sent?.clear(); announce() })
   function subscribe(suffix, since, onMessage) {
     ;(async () => {
       for (let delay = 1000; ; delay = Math.min(delay * 2, 60_000)) {
@@ -316,6 +331,7 @@ function host(root) {
     if (!(Date.now() - Date.parse(req.ts) < 10 * 60_000)) return console.log('Skipped an old request.')
     if (req.ls !== undefined) listFolder(req)
     else if (req.open !== undefined) openChat(req)
+    else if (req.stop !== undefined) stopChat(String(req.stop))
     else startChat(req)
   })
 
@@ -335,6 +351,7 @@ function host(root) {
   // Also pick up notes for our chats that a Claude Code window saved before we saw them.
   const sweep = () => {
     runDueSchedules()
+    sendRecapIfDue(r => postSide('s', r).then(res => res?.ok))
     let files = []
     try { files = fs.readdirSync(NOTES).filter(f => f.endsWith('.json')) } catch {}
     for (const f of files) {
@@ -409,8 +426,19 @@ function host(root) {
     return c
   }
 
+  // Stop on the watch: interrupt the chat's running note, as Ctrl+C would. The note is kept as stopped.
+  function stopChat(name) {
+    const child = running.get(name)
+    if (!child) return console.log(`Chat "${name}" isn't running a note; nothing to stop.`)
+    console.log(`Chat "${name}": stopped from the watch`)
+    child.stoppedFromWatch = true
+    child.kill('SIGINT')
+    setTimeout(() => child.exitCode === null && child.kill('SIGTERM'), 5000).unref()
+  }
+
   // Running notes: one at a time per chat, each continuing the chat's Claude Code session.
   const queues = new Map()
+  const running = new Map() // chat -> its claude process
   function take(n) {
     if (!tryClaim(n.id)) return // another process has it
     writeAtomic(noteFile(n.id), JSON.stringify({ ...n, status: 'sent' }, null, 2))
@@ -428,15 +456,17 @@ function host(root) {
       'will not see or answer questions: do it autonomously in this project, making reasonable assumptions. If an action is ' +
       `blocked by the permission system, skip it and mention it. When finished, call watch_note_done with note_id ${n.id}, ` +
       'a short summary, optionally a suggestion (the next prompt they would likely send) and, if it changed something ' +
-      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of a short GIF made from a video with ffmpeg if it moves (under 500 KB).'
+      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of a short full-quality GIF made from a video with ffmpeg if it moves (under 4 MB). ' +
+      'If you reach a real choice only they can make, you may ask once with watch_ask (they tap an answer on the watch).'
     const args = ['-p', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
-      ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done',
+      ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done', 'mcp__handoff__watch_ask',
       ...(chat.started ? ['--resume', chat.session] : ['--session-id', chat.session])]
     const env = { ...process.env, CLAUDE_WATCH_NOTES_NAME: n.to }
     delete env.CLAUDE_WATCH_NOTES_CHANNEL // its plugin server must not claim other notes
-    let result = '', failed = null, sawSession = false
+    let result = '', failed = null, sawSession = false, stopped = false
     await new Promise(resolve => {
       const child = spawn(process.env.CLAUDE_WATCH_NOTES_CLAUDE || 'claude', args, { cwd: chat.dir, env, stdio: ['pipe', 'pipe', 'pipe'] })
+      running.set(n.to, child)
       child.on('error', e => { failed = e.code === 'ENOENT' ? '`claude` not found' : e.message; resolve() })
       child.stdin.end(prompt) // on stdin, so a note starting with "-" can't be read as an option
       let buf = ''
@@ -461,8 +491,13 @@ function host(root) {
         }
       })
       child.stderr.on('data', d => logTo(n.to, String(d)))
-      child.on('close', code => { if (code && !failed) failed = `claude exited with code ${code}`; resolve() })
+      child.on('close', code => {
+        stopped = !!child.stoppedFromWatch
+        if (code && !failed && !stopped) failed = `claude exited with code ${code}`
+        resolve()
+      })
     })
+    running.delete(n.to)
     if (sawSession) chat.started = true
     chat.lastUsed = new Date().toISOString()
     saveChats()
@@ -470,13 +505,14 @@ function host(root) {
     let saved = n
     try { saved = JSON.parse(fs.readFileSync(noteFile(n.id), 'utf8')) } catch {}
     if (saved.status !== 'done') {
-      writeAtomic(noteFile(n.id), JSON.stringify({ ...saved, status: failed ? 'failed' : 'done',
-        summary: failed ? `Failed: ${failed}` : result.slice(0, 4000) || 'Finished (no summary).', doneAt: new Date().toISOString() }, null, 2))
+      writeAtomic(noteFile(n.id), JSON.stringify({ ...saved, status: stopped ? 'stopped' : failed ? 'failed' : 'done', chat: n.to,
+        summary: stopped ? 'Stopped from the watch.' : failed ? `Failed: ${failed}` : result.slice(0, 4000) || 'Finished (no summary).',
+        doneAt: new Date().toISOString() }, null, 2))
     }
-    logTo(n.to, failed ? `━━ ${stamp()} Failed: ${failed}\n` : `━━ ${stamp()} Done.\n`)
+    logTo(n.to, stopped ? `━━ ${stamp()} Stopped from your watch.\n` : failed ? `━━ ${stamp()} Failed: ${failed}\n` : `━━ ${stamp()} Done.\n`)
     busy.delete(n.to)
     announce()
-    console.log(`Chat "${n.to}": ${failed ? `failed (${failed})` : 'done'}`)
+    console.log(`Chat "${n.to}": ${stopped ? 'stopped' : failed ? `failed (${failed})` : 'done'}`)
   }
 }
 

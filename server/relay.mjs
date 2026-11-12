@@ -113,6 +113,40 @@ export async function saveNote(ev, key) {
   try { return { note: JSON.parse(fs.readFileSync(noteFile(id), 'utf8')), created: false } } catch { return { note, created: false } }
 }
 
+// ---------- daily recap ----------
+// Each evening (6 PM on this Mac, or CLAUDE_WATCH_NOTES_RECAP_HOUR) the watch gets one line per
+// chat: the notes it finished today, in the user's own words (never Claude's summaries). Every
+// Handoff process tries; a marker file (O_EXCL) makes sure only one sends it.
+const RECAP_HOUR = () => Number(process.env.CLAUDE_WATCH_NOTES_RECAP_HOUR ?? 18)
+const dayOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+export function recap(now = new Date()) {
+  const day = dayOf(now)
+  const chats = {}
+  let files = []
+  try { files = fs.readdirSync(NOTES).filter(f => f.endsWith('.json')) } catch {}
+  for (const f of files) {
+    let n
+    try { n = JSON.parse(fs.readFileSync(path.join(NOTES, f), 'utf8')) } catch { continue }
+    if (n.status !== 'done' || n.source === 'email' || !n.doneAt || dayOf(new Date(n.doneAt)) !== day) continue
+    ;(chats[n.chat || n.to || 'Claude'] ??= []).push({ t: n.text.split('\n')[0].slice(0, 80), at: n.doneAt })
+  }
+  return { recap: day, lines: Object.entries(chats).sort().map(([chat, done]) =>
+    ({ chat, done: done.sort((a, b) => a.at.localeCompare(b.at)).map(d => d.t).slice(-10), count: done.length })) }
+}
+
+/// Sends today's recap once, after the recap hour, if anything got done. `post` sends it to the watch.
+export async function sendRecapIfDue(post, now = new Date()) {
+  if (now.getHours() < RECAP_HOUR()) return false
+  const r = recap(now)
+  if (!r.lines.length) return false
+  const marker = path.join(DIR, `recap-${r.recap}`)
+  try { fs.writeFileSync(marker, String(process.pid), { flag: 'wx' }) } catch { return false } // sent already
+  if (await post(r)) return true
+  fs.rmSync(marker, { force: true }) // try again next time
+  return false
+}
+
 // ---------- recurring tasks ----------
 // The watch keeps the list and sends all of it, sealed, on "<topic>-r" whenever it changes; the
 // newest list wins. Every Handoff process on this Mac runs them: when one is due, its note is made

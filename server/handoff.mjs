@@ -15,7 +15,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { CONFIG, DIR, NOTES, RELAY, alive, currentClaim, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, tryClaim, writeAtomic } from './relay.mjs'
+import { CONFIG, DIR, NOTES, RELAY, alive, currentClaim, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, sendRecapIfDue, tryClaim, writeAtomic } from './relay.mjs'
 
 const CURSOR = path.join(DIR, 'cursor')
 
@@ -86,7 +86,9 @@ The user is away from the computer and will not see or answer questions: treat e
 If an action is blocked or denied by the permission system, do not retry it or look for a way around it: skip that step, finish what you can, and list what was blocked in your summary for the user to do when they get home.
 Claude's response is never sent to the watch. Every note must end with a call to watch_note_done with its note_id and a short summary, including quick questions (put the answer in the summary) and notes you decide not to act on. Answering in the terminal alone is not enough: the user isn't there, and watch_note_done is how the result is saved for them and how the suggestion reaches the watch.
 You may also pass a suggestion: the one prompt the user would most likely send next, written as the user would type it (under 80 characters, e.g. "add tests for the new parser"). It appears on the watch with an Accept suggestion button that sends it back to you as a new note. Leave it out when there's no obvious next step.
-When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. To show something moving (a game, an animation), pass a short GIF instead, under 500 KB: record a video of it (an .mp4 or .mov, for example with Playwright's recordVideo or \`screencapture -v -V 5 FILE.mov\`), then turn it into a GIF with \`ffmpeg -y -t 6 -i VIDEO -vf "fps=8,scale=320:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse" CLIP.gif\` (if it's too big, lower fps, scale or -t). Leave it out when there's nothing to see.
+When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. To show something moving (a game, an animation), pass a short GIF instead, under 4 MB: record a video of it (an .mp4 or .mov, for example with Playwright's recordVideo or \`screencapture -v -V 5 FILE.mov\`), then turn it into a full-quality GIF with \`ffmpeg -y -t 6 -i VIDEO -vf "fps=12,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" CLIP.gif\`. Keep the quality: if it's over 4 MB, make the clip shorter (a smaller -t) rather than lowering the size, frame rate or colors. Leave it out when there's nothing to see.
+If you hit a real choice only the user can make (which of two designs, whether to delete something), you may ask with watch_ask: a short question and 2 to 4 short answers, which they tap on their watch. It waits for the answer (5 minutes by default); if none comes, decide yourself and say so in your summary. Ask at most once or twice per note, and never about something you can reasonably decide.
+If a message says the user tapped Stop on their watch, stop working on the current note right away: don't start anything new, and call watch_note_done with what was done so far.
 Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
 Notes with source="schedule" are recurring tasks the user set up on the watch; they come back on schedule, so do this run's work only.
 If you were not started as a channel, call watch_inbox to fetch pending notes.`
@@ -106,9 +108,22 @@ const TOOLS = [
         note_id: { type: 'string' },
         summary: { type: 'string' },
         suggestion: { type: 'string', description: 'Optional: the next prompt the user would most likely send, as they would type it (under 80 characters). Shown on the watch with an Accept suggestion button.' },
-        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or a short GIF of something moving (under 500 KB, made from a video with ffmpeg). Shown on the watch.' },
+        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or a short full-quality GIF of something moving (under 4 MB, made from a video with ffmpeg). Shown on the watch.' },
       },
       required: ['note_id', 'summary'],
+    },
+  },
+  {
+    name: 'watch_ask',
+    description: "Ask the user a multiple-choice question on their Apple Watch and wait for the answer they tap. Only for a real choice you can't reasonably make yourself.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'Short, under 120 characters.' },
+        options: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 4, description: '2 to 4 short answers (under 40 characters each).' },
+        wait_minutes: { type: 'number', description: 'How long to wait for an answer (default 5, at most 15).' },
+      },
+      required: ['question', 'options'],
     },
   },
 ]
@@ -139,15 +154,15 @@ const sendSuggestion = (text, noteId) => postBack('s', { s: text, note: noteId, 
 const sendImage = (img, noteId) => postBack('i', { i: img.toString('base64'), note: noteId, chat: NAME, ts: new Date().toISOString() }, 60_000)
 
 // Claude makes the screenshot (this server runs nothing); we only check it's a small PNG, JPEG or
-// GIF. A GIF (a clip Claude turned from a video) may be bigger, but sealed it must stay under the
-// watch's 1 MB download limit.
-const IMAGE_MAX = 300 * 1024, GIF_MAX = 500 * 1024
+// GIF. A GIF (a clip Claude turned from a video) may be much bigger, but sealed (base64 twice) it
+// must stay under the watch's 8 MB download limit (Store.maxDownload).
+const IMAGE_MAX = 300 * 1024, GIF_MAX = 4 * 1024 * 1024
 function readImage(p) {
   const f = path.resolve(p)
   let st
   try { st = fs.statSync(f) } catch { throw new Error(`Can't read the image ${f}. Nothing was marked done; try again with a screenshot that exists, or without image.`) }
   if (!st.isFile()) throw new Error(`${f} isn't a file. Nothing was marked done.`)
-  if (st.size > GIF_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB (a GIF, under 500 KB). Nothing was marked done. Shrink it and try again.`)
+  if (st.size > GIF_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB (a GIF, under 4 MB). Nothing was marked done. For a GIF, make the clip shorter and try again.`)
   const b = fs.readFileSync(f)
   const png = b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   const jpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
@@ -157,8 +172,10 @@ function readImage(p) {
   return b
 }
 
-// Listening sessions announce themselves every minute so the watch can list them by name.
-const HEARTBEAT_MS = Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 60_000
+// Listening sessions announce themselves so the watch can list them by name: right away when what
+// they're doing changes, and otherwise every 15 minutes. ntfy.sh limits how many messages each home
+// internet connection may send per day (a few hundred), so not every minute.
+const HEARTBEAT_MS = Number(process.env.CLAUDE_WATCH_NOTES_HEARTBEAT_MS) || 15 * 60_000
 // The heartbeat also says which note this chat is working on, for the watch's Projects screen.
 const working = () => allNotes().find(n => n.status === 'sent' && currentClaim(n.id)?.pid === process.pid)?.text.slice(0, 120)
 const heartbeat = () => postBack('c', { chat: NAME, working: working(), ts: new Date().toISOString() })
@@ -186,12 +203,63 @@ function askWatch({ request_id, tool_name, description, input_preview } = {}) {
   postBack('p', { p: request_id, tool: String(tool_name ?? '').slice(0, 80), what: String(description ?? '').slice(0, 300),
     input: String(input_preview ?? '').slice(0, 1500), chat: NAME, ts: new Date().toISOString() })
 }
+const waiting = new Map() // watch_ask question id -> resolve(choice)
 function verdict(v) {
+  if (typeof v?.a === 'string' && waiting.has(v.a)) return waiting.get(v.a)(v.choice)
+  if (v?.stop !== undefined) return stopped(v)
   const id = String(v?.v ?? '')
   if (!asked.has(id) || typeof v.ok !== 'boolean' || (v.chat && v.chat !== NAME)) return
   asked.delete(id)
   log('watch', v.ok ? 'allowed' : 'denied', id)
   out({ method: 'notifications/claude/channel/permission', params: { request_id: id, behavior: v.ok ? 'allow' : 'deny' } })
+}
+
+// Stop on the watch: tell Claude to wrap up the note it's on. It sees this at its next step, like a
+// message typed into the terminal while it works. (A `handoff host` chat is stopped by the host.)
+function stopped(v) {
+  if (v.stop !== NAME || !(Date.now() - Date.parse(v.ts) < 5 * 60_000)) return
+  const n = allNotes().find(n => n.status === 'sent' && currentClaim(n.id)?.pid === process.pid)
+  log('watch: stop', n?.id ?? '(idle)')
+  if (!n) return
+  out({ method: 'notifications/claude/channel', params: { content: 'The user tapped Stop on their watch. Stop working on this note now: ' +
+    `don't start anything new, and call watch_note_done with note_id ${n.id} and what was done so far.`, meta: { note_id: n.id, source: 'stop' } } })
+}
+
+// watch_ask: posts the question with the permission prompts on "<topic>-p" and waits for the tap
+// on "<topic>-v". Sessions that already follow -v (channels) get the answer there; others listen
+// just for this question.
+async function ask({ question, options, wait_minutes } = {}) {
+  const q = String(question ?? '').trim().slice(0, 200)
+  const opts = Array.isArray(options) ? options.map(o => String(o).trim().slice(0, 60)).filter(Boolean).slice(0, 4) : []
+  if (!q || opts.length < 2) throw new Error('watch_ask needs a question and 2 to 4 options.')
+  const minutes = Math.min(Math.max(Number(wait_minutes) || 5, 0.01), 15)
+  const id = `q${crypto.randomBytes(6).toString('hex')}`
+  const since = Math.floor(Date.now() / 1000) - 1
+  const answer = new Promise(resolve => {
+    waiting.set(id, choice => { if (opts.includes(choice)) resolve(choice) })
+    setTimeout(() => resolve(null), minutes * 60_000)
+  })
+  let ctrl
+  if (!CHANNEL) { // listen for this answer ourselves
+    ctrl = new AbortController()
+    ;(async () => {
+      const cfg = readConfig()
+      if (!cfg) return
+      try {
+        for await (const ev of events(`${cfg.topicURL}-v/json?since=${since}`, ctrl.signal)) {
+          if (ev.event === 'message') try { verdict(open(ev.message, Buffer.from(cfg.key, 'base64'))) } catch {}
+        }
+      } catch {}
+    })()
+  }
+  if (!await postBack('p', { q: id, question: q, options: opts, chat: NAME, ts: new Date().toISOString() })) {
+    waiting.delete(id); ctrl?.abort()
+    return "Couldn't reach the watch (relay unreachable). Decide yourself and mention it in your summary."
+  }
+  log('asked the watch', id)
+  const choice = await answer
+  waiting.delete(id); ctrl?.abort()
+  return choice ? `The user chose: ${choice}` : `No answer from the watch in ${minutes} minutes. Decide yourself and mention it in your summary.`
 }
 
 // Follows a side topic from the watch, sealed with the pairing key: reconnects with backoff and
@@ -244,7 +312,7 @@ async function callTool(name, args = {}) {
     let n
     try { n = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { throw new Error(`No watch note with id ${args.note_id}`) }
     const image = typeof args.image === 'string' && args.image.trim() ? readImage(args.image.trim()) : null // before anything is saved
-    Object.assign(n, { status: 'done', summary: args.summary, doneAt: new Date().toISOString() })
+    Object.assign(n, { status: 'done', summary: args.summary, doneAt: new Date().toISOString(), chat: NAME })
     const suggestion = typeof args.suggestion === 'string' ? args.suggestion.trim().slice(0, 200) : ''
     if (suggestion) n.suggestion = suggestion
     writeAtomic(f, JSON.stringify(n, null, 2))
@@ -257,6 +325,7 @@ async function callTool(name, args = {}) {
       ? 'Screenshot sent to the watch.' : "The screenshot couldn't be sent to the watch (relay unreachable).")
     return said.join(' ')
   }
+  if (name === 'watch_ask') return ask(args)
   throw new Error(`unknown tool: ${name}`)
 }
 
@@ -266,7 +335,7 @@ function handle(msg) {
     return out({ id, result: {
       protocolVersion: params?.protocolVersion || '2025-06-18',
       capabilities: { tools: {}, experimental: { 'claude/channel': {}, ...(CHANNEL && { 'claude/channel/permission': {} }) } },
-      serverInfo: { name: 'handoff', version: '3.2.0' },
+      serverInfo: { name: 'handoff', version: '3.3.0' },
       instructions: INSTRUCTIONS,
     } })
   }
@@ -315,6 +384,7 @@ const LEGACY_GRACE_MS = 2 * 60_000
 function sweep() {
   if (!CHANNEL || !ready) return
   runDueSchedules()
+  sendRecapIfDue(r => postBack('s', { ...r, ts: new Date().toISOString() }))
   for (const n of allNotes()) {
     if (n.status === 'done') continue
     const c = currentClaim(n.id)

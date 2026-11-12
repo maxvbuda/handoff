@@ -7,9 +7,10 @@ import WidgetKit
 
 // Jot ideas on your wrist; Claude Code does them while you're away.
 // By design there is no response view: you get a haptic and a checkmark, nothing to read.
-// What comes back is Claude's suggested next prompt, which you can accept with a tap, a
-// screenshot when Claude changed something you can look at, and permission prompts from
-// `handoff start` chats, which you can allow or deny.
+// What comes back is Claude's suggested next prompt, which you can accept with a tap,
+// screenshots (or GIFs) when Claude changed something you can look at, permission prompts from
+// `handoff start` chats, which you can allow or deny, a question when Claude needs you to choose,
+// and each evening a recap: the notes each chat finished that day, in your own words.
 
 @main
 struct ClaudeNotesApp: App {
@@ -111,6 +112,15 @@ enum Relay {
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
     }()
+
+    /// For screenshots and GIFs, which can be a few megabytes: more time to download.
+    static let downloads: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 120
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config)
+    }()
 }
 
 struct Pairing: Codable {
@@ -133,21 +143,37 @@ struct Suggestion: Codable, Equatable {
     var chat: String? = nil // the chat that suggested it; accepting sends it back there
 }
 
-/// A screenshot Claude sent when it finished a note (watch_note_done's `image`). The picture
-/// itself is kept in a file (Store.screenshotFile), since it's too big for UserDefaults.
-struct Screenshot: Codable, Equatable {
+/// A screenshot (or GIF) Claude sent when it finished a note (watch_note_done's `image`). The
+/// picture itself is kept in a file (Store.shotFile), since it's too big for UserDefaults. The
+/// newest few are kept; saved ones stay until deleted.
+struct Shot: Codable, Identifiable, Equatable, Hashable {
     let id: String // relay message id
     var chat: String? = nil
+    var saved = false
+    var at = Date.now
+}
+
+/// The evening recap: the notes each chat finished today, in the user's words.
+struct Recap: Codable, Equatable {
+    struct Line: Codable, Equatable, Hashable {
+        let chat: String
+        let done: [String]
+        let count: Int
+    }
+    let day: String
+    let lines: [Line]
 }
 
 /// A permission prompt from a `handoff start` chat: Claude wants to use a tool and is waiting for
-/// a yes or no, here or in the terminal (whichever comes first counts).
+/// a yes or no, here or in the terminal (whichever comes first counts). Or, with `options`, a
+/// question Claude asked (watch_ask): `what` is the question, and it waits for one of the options.
 struct Approval: Codable, Identifiable, Equatable {
-    let id: String // Claude Code's request id
+    let id: String // Claude Code's request id, or the question's
     let tool: String
     let what: String // Claude's description of the call
     let input: String // the call's arguments, as text
     var chat: String? = nil
+    var options: [String]? = nil
 }
 
 /// A note Claude gets on a schedule, set up here and run by the Mac (see runDueSchedules in
@@ -187,7 +213,12 @@ struct ChatStatus: Equatable {
 /// (`working`, and `repo` messages with git status); permission prompts on "<topic>-p".
 private struct BackMessage: Decodable {
     var s: String?
-    var i: String? // screenshot, base64 PNG or JPEG
+    var i: String? // screenshot, base64 PNG, JPEG or GIF
+    var recap: String? // the evening recap's day, with its lines (on "<topic>-s")
+    var lines: [Recap.Line]?
+    var q: String? // a question from Claude (on "<topic>-p"), with its answers
+    var question: String?
+    var options: [String]?
     var chat: String?
     var host: String?
     var root: String?
@@ -227,10 +258,24 @@ final class Store {
             saveWidget()
         }
     }
-    /// The last screenshot a chat sent, until it's dismissed or a newer one comes.
-    private(set) var screenshot: Screenshot?
-    private(set) var screenshotImage: UIImage?
-    static let screenshotFile = URL.cachesDirectory.appending(path: "screenshot")
+    /// Screenshots and GIFs from Claude, newest first: the last few, plus any you saved.
+    private(set) var shots: [Shot] = [] { didSet { defaults.set(try? JSONEncoder().encode(shots), forKey: "shots") } }
+    /// Their pictures, loaded when first shown.
+    private var images: [String: Picture] = [:]
+    static let keepShots = 5 // unsaved
+    /// The biggest screenshot download (sealed): a 4 MB GIF, as the Mac allows, plus base64 twice.
+    static let maxDownload = 8_000_000
+    static let shotsFolder = URL.applicationSupportDirectory.appending(path: "shots")
+    static func shotFile(_ id: String) -> URL { shotsFolder.appending(path: id.filter { $0.isLetter || $0.isNumber }) }
+    /// This evening's recap, until dismissed or the next one comes.
+    var recap: Recap? { didSet { defaults.set(try? JSONEncoder().encode(recap), forKey: "recap") } }
+    /// One-tap notes (Quick reply), editable there.
+    var quickReplies: [String] { didSet { defaults.set(quickReplies, forKey: "quickReplies") } }
+    static let defaultQuickReplies = [String(localized: "Keep going"), String(localized: "Commit it"),
+                                      String(localized: "Run the tests"), String(localized: "Undo that")]
+    /// What Ship it sends.
+    static let shipIt = "Ship it: commit all the changes with a clear message and push them. If this project is deployed " +
+        "somewhere (a website with a deploy script or hosting set up), deploy it too. Don't change anything else."
     /// Open Claude Code chats (`handoff start` sessions), by name.
     private(set) var chats: [String] = [] {
         didSet {
@@ -260,10 +305,8 @@ final class Store {
     private(set) var approvals: [Approval] = []
     /// The chat new notes go to; nil sends to any open chat.
     var target: String? { didSet { defaults.set(target, forKey: "target") } }
-    static let chatWindow = "3m" // chats announce themselves every minute
+    static let chatWindow = "20m" // chats announce themselves when they change, and every 15 minutes
     static let approvalWindow = "10m" // older prompts have likely been answered at the Mac
-    /// Ready-made notes for the usual follow-ups, sent with one tap.
-    static let quickReplies = ["Keep going", "Commit it", "Run the tests", "Undo that"]
     private(set) var pairing = Keychain.load().flatMap { try? JSONDecoder().decode(Pairing.self, from: $0) }
     private var sending: Task<Void, Never>?
     private var refreshing: Task<Void, Never>?
@@ -279,12 +322,23 @@ final class Store {
         suggestionsOn = defaults.object(forKey: "suggestionsOn") as? Bool ?? true
         suggestion = (defaults.data(forKey: "suggestion")).flatMap { try? JSONDecoder().decode(Suggestion.self, from: $0) }
         target = defaults.string(forKey: "target")
-        if let saved = (defaults.data(forKey: "screenshot")).flatMap({ try? JSONDecoder().decode(Screenshot.self, from: $0) }),
-           let image = (try? Data(contentsOf: Self.screenshotFile)).flatMap(UIImage.picture) {
-            screenshot = saved
-            screenshotImage = image
-        }
+        quickReplies = defaults.stringArray(forKey: "quickReplies") ?? Self.defaultQuickReplies
+        recap = (defaults.data(forKey: "recap")).flatMap { try? JSONDecoder().decode(Recap.self, from: $0) }
+        shots = (defaults.data(forKey: "shots")).flatMap { try? JSONDecoder().decode([Shot].self, from: $0) } ?? []
         schedules = (defaults.data(forKey: "schedules")).flatMap { try? JSONDecoder().decode([Recurring].self, from: $0) } ?? []
+        // Hand-Off 1.2 kept just the latest screenshot, in caches.
+        let old = URL.cachesDirectory.appending(path: "screenshot")
+        if let saved = defaults.data(forKey: "screenshot"),
+           let id = (try? JSONSerialization.jsonObject(with: saved) as? [String: Any])?["id"] as? String,
+           let bytes = try? Data(contentsOf: old) {
+            try? FileManager.default.createDirectory(at: Self.shotsFolder, withIntermediateDirectories: true)
+            if (try? bytes.write(to: Self.shotFile(id))) != nil {
+                shots.insert(Shot(id: id), at: 0)
+                defaults.set(try? JSONEncoder().encode(shots), forKey: "shots")
+            }
+        }
+        defaults.removeObject(forKey: "screenshot")
+        try? FileManager.default.removeItem(at: old)
         #if targetEnvironment(simulator)
         if defaults.bool(forKey: "resetPairing") { setPairing(nil) } // UI tests start unpaired
         #endif
@@ -310,6 +364,26 @@ final class Store {
     /// Sends a quick reply as a note, to the chosen chat.
     func sendQuick(_ text: String) {
         enqueue(text, to: target)
+    }
+
+    /// Ship it: asks `chat` to commit, push and deploy what it did.
+    func shipIt(_ chat: String) {
+        enqueue(Self.shipIt, to: chat)
+    }
+
+    /// Stop: asks `chat` to stop the note it's working on. A `handoff host` chat is stopped by the
+    /// host; a `handoff start` chat gets the message from its own server. Returns false if not sent.
+    func stop(_ chat: String) async -> Bool {
+        guard let pairing else { return false }
+        var sent = false
+        if hostedChats.contains(chat) {
+            sent = await askHost(["stop": chat])
+        } else if let body = try? JSONSerialization.data(withJSONObject: ["stop": chat, "ts": Date.now.ISO8601Format()]) {
+            sent = (try? await Ntfy.publish(body, key: SymmetricKey(data: pairing.key),
+                                            to: URL(string: pairing.topicURL.absoluteString + "-v")!)) != nil
+        }
+        if sent { Haptic.play(.directionDown) }
+        return sent
     }
 
     /// Sends Claude's suggestion back to it as a new note.
@@ -488,9 +562,13 @@ final class Store {
         let answered = Set(defaults.stringArray(forKey: "answered") ?? [])
         var open: [Approval] = []
         for msg in Self.messages(in: data, key: SymmetricKey(data: pairing.key)) {
-            guard let id = msg.body.p, !answered.contains(id), !open.contains(where: { $0.id == id }) else { continue }
-            open.append(Approval(id: id, tool: msg.body.tool ?? "a tool", what: msg.body.what ?? "",
-                                 input: msg.body.input ?? "", chat: msg.body.chat))
+            guard let id = msg.body.p ?? msg.body.q, !answered.contains(id), !open.contains(where: { $0.id == id }) else { continue }
+            if let options = msg.body.options, msg.body.q != nil {
+                open.append(Approval(id: id, tool: "", what: msg.body.question ?? "", input: "", chat: msg.body.chat, options: options))
+            } else {
+                open.append(Approval(id: id, tool: msg.body.tool ?? "a tool", what: msg.body.what ?? "",
+                                     input: msg.body.input ?? "", chat: msg.body.chat))
+            }
         }
         if open.contains(where: { a in !approvals.contains(where: { $0.id == a.id }) }) {
             Haptic.play(.notification)
@@ -533,30 +611,53 @@ final class Store {
         guard let body = try? JSONSerialization.data(withJSONObject: fields),
               (try? await Ntfy.publish(body, key: SymmetricKey(data: pairing.key),
                                        to: URL(string: pairing.topicURL.absoluteString + "-v")!)) != nil else { return false }
-        defaults.set(Array(((defaults.stringArray(forKey: "answered") ?? []) + [a.id]).suffix(50)), forKey: "answered")
-        approvals.removeAll { $0.id == a.id }
+        markAnswered(a)
         Haptic.play(allow ? .success : .directionDown)
         return true
     }
 
-    /// Picks up the newest suggestion the Mac posted to "<topic>-s" since we last looked.
+    /// Answers a question Claude asked with one of its options. Returns false if it couldn't be sent.
+    func choose(_ a: Approval, _ option: String) async -> Bool {
+        guard let pairing else { return false }
+        var fields: [String: Any] = ["a": a.id, "choice": option, "ts": Date.now.ISO8601Format()]
+        fields["chat"] = a.chat
+        guard let body = try? JSONSerialization.data(withJSONObject: fields),
+              (try? await Ntfy.publish(body, key: SymmetricKey(data: pairing.key),
+                                       to: URL(string: pairing.topicURL.absoluteString + "-v")!)) != nil else { return false }
+        markAnswered(a)
+        Haptic.play(.success)
+        return true
+    }
+
+    private func markAnswered(_ a: Approval) {
+        defaults.set(Array(((defaults.stringArray(forKey: "answered") ?? []) + [a.id]).suffix(50)), forKey: "answered")
+        approvals.removeAll { $0.id == a.id }
+    }
+
+    /// Picks up the newest suggestion the Mac posted to "<topic>-s" since we last looked, and the
+    /// evening recap, which comes the same way.
     func checkSuggestion() async {
-        guard suggestionsOn, let pairing else { return }
+        guard let pairing else { return }
         let since = defaults.string(forKey: "suggestionSince") ?? "12h"
         let url = URL(string: "\(pairing.topicURL.absoluteString)-s/json?poll=1&since=\(since)")!
         guard let (data, _) = try? await Relay.session.data(from: url),
-              suggestionsOn, self.pairing?.topicURL == pairing.topicURL else { return } // changed meanwhile
+              self.pairing?.topicURL == pairing.topicURL else { return } // changed meanwhile
         // Advance past everything seen, including junk, so it isn't fetched again.
         for line in data.split(separator: UInt8(ascii: "\n")) {
             if let id = (try? JSONDecoder().decode(Ntfy.Event.self, from: line))?.id { defaults.set(id, forKey: "suggestionSince") }
         }
-        if let (id, body) = Self.messages(in: data, key: SymmetricKey(data: pairing.key)).last(where: { $0.body.s?.isEmpty == false }) {
+        let messages = Self.messages(in: data, key: SymmetricKey(data: pairing.key))
+        if suggestionsOn, let (id, body) = messages.last(where: { $0.body.s?.isEmpty == false }) {
             suggestion = Suggestion(id: id, text: body.s!, chat: body.chat)
+        }
+        if let body = messages.last(where: { $0.body.recap != nil && $0.body.lines?.isEmpty == false })?.body {
+            recap = Recap(day: body.recap!, lines: body.lines!)
+            Haptic.play(.notification)
         }
     }
 
-    /// Picks up the newest screenshot a chat posted to "<topic>-i" since we last looked. They're too
-    /// big for a relay message, so each is an attachment (kept about 3 hours) that we download.
+    /// Picks up the screenshots chats posted to "<topic>-i" since we last looked (the newest few).
+    /// They're too big for a relay message, so each is an attachment (kept about 3 hours) that we download.
     func checkScreenshot() async {
         guard let pairing else { return }
         let since = defaults.string(forKey: "screenshotSince") ?? "3h"
@@ -565,29 +666,59 @@ final class Store {
               self.pairing?.topicURL == pairing.topicURL else { return }
         let key = SymmetricKey(data: pairing.key)
         let events = data.split(separator: UInt8(ascii: "\n")).compactMap { try? JSONDecoder().decode(Ntfy.Event.self, from: $0) }
-        // Newest first: only the latest one is shown, so older ones needn't be downloaded.
-        for ev in events.reversed() {
+        // Newest first: only the latest few are kept, so older ones needn't be downloaded.
+        var got: [(Shot, Data, Picture)] = []
+        for ev in events.reversed() where got.count < Self.keepShots {
             guard let id = ev.id else { continue }
             var sealed = ev.message
-            if let a = ev.attachment, (a.size ?? 0) <= 1_000_000, let u = URL(string: a.url) {
+            if let a = ev.attachment, (a.size ?? 0) <= Self.maxDownload, let u = URL(string: a.url) {
                 // Not downloaded (offline, or it expired): try again next time, unless it's gone for good.
-                guard let (file, res) = try? await Relay.session.data(from: u) else { return }
+                guard let (file, res) = try? await Relay.downloads.data(from: u) else { return }
                 sealed = (res as? HTTPURLResponse)?.statusCode == 200 ? String(data: file, encoding: .utf8) : nil
             }
             guard self.pairing?.topicURL == pairing.topicURL else { return }
             if let box = sealed.flatMap({ Data(base64Encoded: $0) }),
                let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: key),
                let body = try? JSONDecoder().decode(BackMessage.self, from: plain),
-               let bytes = body.i.flatMap({ Data(base64Encoded: $0) }), let image = UIImage.picture(bytes) {
-                try? bytes.write(to: Self.screenshotFile)
-                screenshot = Screenshot(id: id, chat: body.chat)
-                screenshotImage = image
-                defaults.set(try? JSONEncoder().encode(screenshot), forKey: "screenshot")
-                Haptic.play(.notification)
-                break
+               let bytes = body.i.flatMap({ Data(base64Encoded: $0) }), let image = Picture(bytes),
+               !shots.contains(where: { $0.id == id }) {
+                got.append((Shot(id: id, chat: body.chat), bytes, image))
             }
         }
+        try? FileManager.default.createDirectory(at: Self.shotsFolder, withIntermediateDirectories: true)
+        for (shot, bytes, image) in got.reversed() where (try? bytes.write(to: Self.shotFile(shot.id))) != nil { // oldest first
+            images[shot.id] = image
+            shots.insert(shot, at: 0)
+        }
+        if !got.isEmpty { pruneShots(); Haptic.play(.notification) }
         if let last = events.last?.id { defaults.set(last, forKey: "screenshotSince") }
+    }
+
+    /// A shot's picture (playing, if it's a GIF), or nil if its file is gone.
+    func image(_ shot: Shot) -> Picture? {
+        if let i = images[shot.id] { return i }
+        let i = (try? Data(contentsOf: Self.shotFile(shot.id))).flatMap(Picture.init)
+        images[shot.id] = i
+        return i
+    }
+
+    /// Save: keeps a shot until you delete it, however many new ones come.
+    func toggleSave(_ shot: Shot) {
+        guard let i = shots.firstIndex(where: { $0.id == shot.id }) else { return }
+        shots[i].saved.toggle()
+        Haptic.play(shots[i].saved ? .success : .click)
+        pruneShots()
+    }
+
+    func deleteShot(_ shot: Shot) {
+        shots.removeAll { $0.id == shot.id }
+        images[shot.id] = nil
+        try? FileManager.default.removeItem(at: Self.shotFile(shot.id))
+    }
+
+    /// Keeps every saved shot and the newest few others.
+    private func pruneShots() {
+        for s in shots.filter({ !$0.saved }).dropFirst(Self.keepShots) { deleteShot(s) }
     }
 
     /// Saves what the Smart Stack widget shows and asks it to redraw, when that changed.
@@ -614,13 +745,6 @@ final class Store {
         return lines.joined(separator: "\n")
     }
 
-    func dismissScreenshot() {
-        screenshot = nil
-        screenshotImage = nil
-        defaults.removeObject(forKey: "screenshot")
-        try? FileManager.default.removeItem(at: Self.screenshotFile)
-    }
-
     func setPairing(_ p: Pairing?) {
         // A send still trying the old pairing would hold up the queue: stop it, start over.
         sending?.cancel()
@@ -630,7 +754,7 @@ final class Store {
         status = [:]
         if !schedules.isEmpty { defaults.set(true, forKey: "schedulesUnsent") } // the new pairing's Mac needs the list
         suggestion = nil
-        dismissScreenshot()
+        recap = nil
         chats = []
         projects = []
         hostedChats = []
@@ -909,14 +1033,33 @@ struct EditorView: View {
         List {
             ForEach(store.approvals) { a in ApprovalSection(approval: a) }
 
-            if let shot = store.screenshot, let image = store.screenshotImage {
+            if let shot = store.shots.first, let image = store.image(shot) {
                 Section(shot.chat.map { String(localized: "Screenshot · \($0)") } ?? String(localized: "Screenshot")) {
-                    NavigationLink { ScreenshotView(image: image) } label: {
-                        PictureView(image: image)
+                    NavigationLink { ShotView(shot: shot) } label: {
+                        PictureView(picture: image)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .accessibilityLabel("Screenshot")
                     }
-                    .swipeActions { Button("Dismiss", role: .destructive) { store.dismissScreenshot() } }
+                    .swipeActions { Button("Delete", role: .destructive) { store.deleteShot(shot) } }
+                    if store.shots.count > 1 {
+                        NavigationLink { GalleryView() } label: {
+                            Label("All screenshots (\(store.shots.count))", systemImage: "photo.stack")
+                        }
+                    }
+                }
+            }
+
+            if let recap = store.recap {
+                Section("Today") {
+                    ForEach(recap.lines, id: \.self) { line in
+                        NavigationLink { GalleryView(chat: line.chat) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(line.chat) · \(line.count) done").font(.footnote).bold()
+                                ForEach(line.done, id: \.self) { Text($0).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                            }
+                        }
+                    }
+                    Button("Dismiss", role: .destructive) { store.recap = nil }.font(.footnote)
                 }
             }
 
@@ -1043,16 +1186,15 @@ struct EditorView: View {
     }
 }
 
-/// A permission prompt: what Claude wants to do, and Allow / Deny. Tap the text to read all of it.
 /// A screenshot from Claude, filling the screen. Tap to zoom in, then drag around it.
 struct ScreenshotView: View {
-    let image: UIImage
+    let picture: Picture
     @State private var zoomed = false
 
     var body: some View {
         GeometryReader { geo in
             ScrollView(zoomed ? [.horizontal, .vertical] : .vertical) {
-                PictureView(image: image)
+                PictureView(picture: picture)
                     .frame(width: geo.size.width * (zoomed ? 2.5 : 1))
                     .onTapGesture { withAnimation { zoomed.toggle() } }
             }
@@ -1061,37 +1203,132 @@ struct ScreenshotView: View {
     }
 }
 
-extension UIImage {
-    /// A screenshot, or a GIF clip Claude made from a video, as an animated image (UIImage(data:)
-    /// keeps only a GIF's first frame).
-    static func picture(_ data: Data) -> UIImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let count = min(CGImageSourceGetCount(source), 200)
-        guard count > 1 else { return UIImage(data: data) }
-        var frames: [UIImage] = [], duration = 0.0
-        for i in 0..<count {
-            guard let frame = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
+/// Every screenshot kept on the watch (or one chat's), newest first.
+struct GalleryView: View {
+    var chat: String? = nil
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        let shots = store.shots.filter { chat == nil || $0.chat == chat }
+        List {
+            ForEach(shots) { shot in
+                NavigationLink { ShotView(shot: shot) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let image = store.image(shot) {
+                            PictureView(picture: image).clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        HStack {
+                            if shot.saved { Image(systemName: "bookmark.fill").accessibilityLabel("Saved") }
+                            Text([shot.chat, shot.at.formatted(date: .omitted, time: .shortened)].compactMap { $0 }.joined(separator: " · "))
+                        }
+                        .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .swipeActions { Button("Delete", role: .destructive) { store.deleteShot(shot) } }
+            }
+            if shots.isEmpty { Text("No screenshots").font(.footnote).foregroundStyle(.secondary) }
+            else {
+                Text("The newest \(Store.keepShots) are kept, and any you save.").font(.caption2).foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        .navigationTitle(chat ?? String(localized: "Screenshots"))
+        .themedBackground()
+    }
+}
+
+/// One screenshot: tap it to see it full screen. Save keeps it; Ship it asks its chat to commit,
+/// push and deploy.
+struct ShotView: View {
+    let shot: Shot
+    @Environment(Store.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var shipped = false
+    @AppStorage("theme") private var theme = Theme.clay
+
+    var body: some View {
+        let current = store.shots.first { $0.id == shot.id } ?? shot
+        List {
+            if let image = store.image(current) {
+                NavigationLink { ScreenshotView(picture: image) } label: {
+                    PictureView(picture: image).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            Button { store.toggleSave(current) } label: {
+                Label(current.saved ? String(localized: "Saved") : String(localized: "Save"),
+                      systemImage: current.saved ? "bookmark.fill" : "bookmark")
+            }
+            .foregroundStyle(theme.color)
+            if let chat = current.chat {
+                Button { store.shipIt(chat); shipped = true } label: {
+                    Label(shipped ? String(localized: "Sent to \(chat)") : String(localized: "Ship it"), systemImage: "shippingbox")
+                }
+                .disabled(shipped)
+            }
+            Button("Delete", role: .destructive) { store.deleteShot(current); dismiss() }
+            if !current.saved {
+                Text("Save it to keep it after newer screenshots come in.").font(.caption2).foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        .navigationTitle(current.chat ?? String(localized: "Screenshot"))
+        .themedBackground()
+    }
+}
+
+/// A permission prompt: what Claude wants to do, and Allow / Deny. Tap the text to read all of it.
+/// Or a question Claude asked: tap an answer.
+
+/// A screenshot, or a GIF clip Claude made from a video. A GIF's frames are decoded as they're
+/// shown, not all at once: a few seconds of full-size clip would otherwise fill the watch's memory.
+/// (UIImage(data:) keeps only a GIF's first frame.)
+final class Picture {
+    let still: UIImage // the first frame
+    private let source: CGImageSource
+    private let ends: [Double] // when each frame ends, from the start
+    private var shown: (index: Int, image: UIImage)
+
+    init?(_ data: Data) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0,
+              let first = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        self.source = source
+        still = UIImage(cgImage: first)
+        shown = (0, still)
+        var t = 0.0
+        ends = (0..<CGImageSourceGetCount(source)).map { i in
             let gif = (CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any])?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
             let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] ?? gif?[kCGImagePropertyGIFDelayTime]) as? Double ?? 0.1
-            duration += delay < 0.02 ? 0.1 : delay // what browsers do with a 0 delay
-            frames.append(UIImage(cgImage: frame))
+            t += delay < 0.02 ? 0.1 : delay // what browsers do with a 0 delay
+            return t
         }
-        return frames.count > 1 ? UIImage.animatedImage(with: frames, duration: duration) : frames.first
+    }
+
+    var animated: Bool { ends.count > 1 }
+    var frameCount: Int { ends.count }
+    /// The shortest frame, for how often to redraw.
+    var step: Double { zip(ends, [0] + ends).map { $0 - $1 }.min() ?? 0.1 }
+
+    /// The frame showing `t` seconds into the loop.
+    func frame(at t: TimeInterval) -> UIImage {
+        guard animated, let total = ends.last else { return still }
+        let at = t.truncatingRemainder(dividingBy: total)
+        let i = ends.firstIndex { at < $0 } ?? 0
+        if i != shown.index, let cg = CGImageSourceCreateImageAtIndex(source, i, nil) { shown = (i, UIImage(cgImage: cg)) }
+        return shown.image
     }
 }
 
 /// Shows a picture, playing it if it's a GIF clip.
 struct PictureView: View {
-    let image: UIImage
+    let picture: Picture
 
     var body: some View {
-        if let frames = image.images, frames.count > 1, image.duration > 0 {
-            TimelineView(.animation(minimumInterval: image.duration / Double(frames.count))) { t in
-                let i = Int(t.date.timeIntervalSinceReferenceDate / image.duration * Double(frames.count)) % frames.count
-                Image(uiImage: frames[i]).resizable().scaledToFit()
+        if picture.animated {
+            TimelineView(.animation(minimumInterval: picture.step)) { t in
+                Image(uiImage: picture.frame(at: t.date.timeIntervalSinceReferenceDate)).resizable().scaledToFit()
             }
         } else {
-            Image(uiImage: image).resizable().scaledToFit()
+            Image(uiImage: picture.still).resizable().scaledToFit()
         }
     }
 }
@@ -1106,6 +1343,19 @@ struct ApprovalSection: View {
 
     var body: some View {
         Section(approval.chat.map { String(localized: "Claude asks · \($0)") } ?? String(localized: "Claude asks")) {
+            if let options = approval.options {
+                Text(approval.what).font(.footnote)
+                ForEach(options, id: \.self) { option in
+                    Button(option) { choose(option) }.foregroundStyle(accent).disabled(busy)
+                }
+                if failed { Text("Couldn't reach your Mac. Try again.").font(.footnote).foregroundStyle(.red) }
+            } else {
+                permission
+            }
+        }
+    }
+
+    @ViewBuilder private var permission: some View {
             NavigationLink {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
@@ -1128,6 +1378,14 @@ struct ApprovalSection: View {
             Button(role: .destructive) { answer(false) } label: { Label("Deny", systemImage: "xmark") }
                 .disabled(busy)
             if failed { Text("Couldn't reach your Mac. Try again.").font(.footnote).foregroundStyle(.red) }
+    }
+
+    private func choose(_ option: String) {
+        busy = true
+        failed = false
+        Task {
+            failed = !(await store.choose(approval, option))
+            busy = false
         }
     }
 
@@ -1141,15 +1399,29 @@ struct ApprovalSection: View {
     }
 }
 
-/// Ready-made notes ("Commit it", "Run the tests"…): one tap sends it and goes back.
+/// Ready-made notes ("Commit it", "Run the tests"…): one tap sends it and goes back. Add your own
+/// below; swipe one to delete it.
 struct QuickReplyView: View {
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @State private var new = ""
 
     var body: some View {
+        @Bindable var store = store
         List {
-            ForEach(Store.quickReplies, id: \.self) { text in
+            ForEach(store.quickReplies, id: \.self) { text in
                 Button(text) { store.sendQuick(text); dismiss() }
+            }
+            .onDelete { store.quickReplies.remove(atOffsets: $0) }
+            .onMove { store.quickReplies.move(fromOffsets: $0, toOffset: $1) }
+            TextField("Add a button…", text: $new)
+                .onSubmit {
+                    let t = new.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !t.isEmpty, !store.quickReplies.contains(t) { store.quickReplies.append(t) }
+                    new = ""
+                }
+            if store.quickReplies != Store.defaultQuickReplies {
+                Button("Reset buttons") { store.quickReplies = Store.defaultQuickReplies }.font(.footnote)
             }
         }
         .navigationTitle(store.target ?? String(localized: "Quick reply"))
@@ -1160,6 +1432,8 @@ struct QuickReplyView: View {
 /// Each open chat: what it's working on, and its folder's git status.
 struct ProjectsView: View {
     @Environment(Store.self) private var store
+    @State private var stopping: String?
+    @State private var sent: Set<String> = [] // stopped or shipped from here, until the chat's status changes
     @AppStorage("theme") private var theme = Theme.clay
     private var accent: Color { theme.color }
 
@@ -1180,11 +1454,29 @@ struct ProjectsView: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
+                if s.working != nil {
+                    Button(role: .destructive) { stopping = name } label: { Label("Stop", systemImage: "stop.fill") }
+                        .disabled(sent.contains(name))
+                } else if s.changes > 0 || s.ahead > 0 {
+                    Button { store.shipIt(name); sent.insert(name) } label: {
+                        Label(sent.contains(name) ? String(localized: "Sent") : String(localized: "Ship it"), systemImage: "shippingbox")
+                    }
+                    .foregroundStyle(accent).disabled(sent.contains(name))
+                }
             }
             if store.chats.isEmpty { Text("No chats are open.").font(.footnote).foregroundStyle(.secondary) }
         }
         .navigationTitle("Projects")
         .themedBackground()
+        .confirmationDialog("Stop \(stopping ?? "")?", isPresented: Binding { stopping != nil } set: { if !$0 { stopping = nil } }) {
+            Button("Stop", role: .destructive) {
+                guard let name = stopping else { return }
+                Task { if await store.stop(name) { sent.insert(name) } }
+            }
+        } message: {
+            Text("Claude stops the note it's working on and keeps what it did so far.")
+        }
+        .onChange(of: store.status) { sent.removeAll() } // stopped, or shipped: the buttons come back
         .task {
             while !Task.isCancelled {
                 await store.checkChats()

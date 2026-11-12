@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased, with Hand-Off 1.2.1
+## 3.3.0 (2026-11-12), with Hand-Off 1.3
 
-- **GIFs:** they play on the watch, in the screenshot's place (Hand-Off 1.2.1). Claude can send a short GIF instead of a screenshot when what it built moves, like a game. It records a video, turns it into a GIF with ffmpeg, and passes it as `image` (or `handoff done --image clip.gif`). GIFs can be up to 500 KB; screenshots stay under 300 KB.
+- **GIFs that play:** when what Claude built moves, like a game, it records a video, turns it into a full-quality GIF with ffmpeg (480 px, 12 frames a second, all 256 colors) and sends that instead of a screenshot. It plays right on the watch. GIFs can be up to 4 MB; screenshots stay under 300 KB. `handoff done --image clip.gif` works too.
+- **Screenshot gallery and Save:** the watch keeps the last 5 screenshots and GIFs instead of only the newest. Tap **Save** on one to keep it however many new ones come in.
+- **Claude asks you:** when Claude reaches a real choice only you can make, it can ask a multiple-choice question on the watch (the new `watch_ask` tool) and you tap the answer. If you don't answer within 5 minutes, it decides itself and says so.
+- **Stop:** in **Projects**, tap **Stop** on a chat that's working to make it stop that note. A `handoff host` chat stops at once; a `handoff start` chat stops at its next step and keeps what it did.
+- **Ship it:** in **Projects**, a chat with changes or unpushed commits gets a **Ship it** button: Claude commits, pushes and, if the project is deployed somewhere, deploys. It's on each screenshot too.
+- **Your own quick buttons:** add your own one-tap notes under **Quick reply**, and swipe to delete them.
+- **Evening recap:** at 6 PM the watch shows each chat's finished notes for the day, in your own words. Tap a chat to see its screenshots.
+- **Fewer relay messages:** chats now send their status when it changes and every 15 minutes, not every minute. ntfy.sh limits how many messages each home internet connection can send per day, and the old once-a-minute updates could use it all up, which stopped notes from getting through.
 
 ## 3.2.0 (2026-11-11), with Hand-Off 1.2
 

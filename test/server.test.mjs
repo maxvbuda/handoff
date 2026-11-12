@@ -112,9 +112,9 @@ describe('MCP protocol', () => {
     s.send({ method: 'notifications/initialized' })
   })
 
-  test('tools/list exposes inbox and done', async () => {
+  test('tools/list exposes inbox, done and ask', async () => {
     const r = await s.request('tools/list')
-    assert.deepEqual(r.result.tools.map(t => t.name).sort(), ['watch_inbox', 'watch_note_done'])
+    assert.deepEqual(r.result.tools.map(t => t.name).sort(), ['watch_ask', 'watch_inbox', 'watch_note_done'])
   })
 
   test('ping', async () => assert.deepEqual((await s.request('ping')).result, {}))
@@ -265,17 +265,17 @@ describe('delivery', () => {
     assert.ok(Buffer.from(got.i, 'base64').equals(img)); assert.equal(got.note, n.id)
   })
 
-  test('watch_note_done sends a GIF clip bigger than a screenshot may be', async () => {
+  test('watch_note_done sends a full-quality GIF clip, much bigger than a screenshot may be', async () => {
     const n = note('gif')
     await post(cfg.topicURL, seal(n, cfg.key))
     await s.waitFor(pushFor(n.id))
-    const gif = Buffer.concat([Buffer.from('GIF89a'), crypto.randomBytes(400_000)])
+    const gif = Buffer.concat([Buffer.from('GIF89a'), crypto.randomBytes(3_900_000)])
     const file = path.join(dir, 'clip.gif')
     fs.writeFileSync(file, gif)
     const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
     assert.match(r.result.content[0].text, /Screenshot sent/)
     const ev = (await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').map(l => JSON.parse(l)).pop()
-    assert.ok(ev.attachment.size < 1_000_000) // the watch downloads up to 1 MB
+    assert.ok(ev.attachment.size < 8_000_000) // the watch downloads up to 8 MB (Store.maxDownload)
     assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(gif))
   })
 
@@ -284,7 +284,7 @@ describe('delivery', () => {
     await post(cfg.topicURL, seal(n, cfg.key))
     await s.waitFor(pushFor(n.id))
     for (const [name, bytes, why] of [['big.png', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(400_000)]), /under 300 KB/],
-      ['big.gif', Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(600_000)]), /under 500 KB/],
+      ['big.gif', Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(4_300_000)]), /under 4 MB/],
       ['clip.mp4', Buffer.from('\0\0\0\x20ftypisom'), /isn't a PNG, JPEG or GIF/],
       ['notes.txt', Buffer.from('hello'), /isn't a PNG, JPEG or GIF/], ['missing.jpg', null, /Can't read/]]) {
       const file = path.join(dir, name)
@@ -343,6 +343,62 @@ describe('approvals from the watch (permission relay)', () => {
     await s.stop()
   })
 
+  test('watch_ask: the question reaches the watch sealed, and the option tapped there is the answer', async () => {
+    for (const channel of ['1', '']) { // a listening session, and a headless host chat's (which listens just for this)
+      const dir = tmpDir(); const cfg = pairDir(dir)
+      const s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_NAME: 'website', CLAUDE_WATCH_NOTES_CHANNEL: channel } })
+      await s.ready
+      if (channel) await connected(`${cfg.topic}-v`)
+      const id = 900 + Number(!!channel)
+      s.send({ id, method: 'tools/call', params: { name: 'watch_ask', arguments: { question: 'Red or blue theme?', options: ['Red', 'Blue'] } } })
+      let evs = []
+      const end = Date.now() + 5000
+      while (!evs.length && Date.now() < end) { evs = await prompts(cfg); await sleep(50) }
+      const q = openBox(evs[0].message, cfg.key)
+      assert.deepEqual([q.question, q.options, q.chat], ['Red or blue theme?', ['Red', 'Blue'], 'website'])
+      assert.match(q.q, /^q[0-9a-f]{12}$/)
+      await connected(`${cfg.topic}-v`)
+      const v = `${cfg.topicURL}-v`
+      await post(v, seal({ a: q.q, choice: 'Green' }, cfg.key)) // not one of the options
+      await post(v, seal({ a: q.q, choice: 'Red' }, crypto.randomBytes(32))) // not our watch
+      await post(v, seal({ a: q.q, choice: 'Blue' }, cfg.key))
+      const r = await s.waitFor(m => m.id === id, 5000, 'answer')
+      assert.equal(r.result.content[0].text, 'The user chose: Blue')
+      await s.stop()
+    }
+  })
+
+  test('watch_ask: no answer in time means Claude decides; a question needs 2 to 4 options', async () => {
+    const dir = tmpDir(); pairDir(dir)
+    const s = startServer(dir)
+    await s.ready
+    const r = await s.request('tools/call', { name: 'watch_ask', arguments: { question: 'Which?', options: ['A', 'B'], wait_minutes: 0.01 } })
+    assert.match(r.result.content[0].text, /No answer from the watch.*Decide yourself/)
+    const bad = await s.request('tools/call', { name: 'watch_ask', arguments: { question: 'Which?', options: ['A'] } })
+    assert.equal(bad.result.isError, true)
+    await s.stop()
+  })
+
+  test('Stop on the watch tells this chat to wrap up the note it is working on', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_NAME: 'website' } })
+    await s.ready
+    await connected(cfg.topic); await connected(`${cfg.topic}-v`)
+    const n = note('rebuild everything')
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const v = `${cfg.topicURL}-v`
+    await post(v, seal({ stop: 'other chat', ts: new Date().toISOString() }, cfg.key)) // another chat's
+    await post(v, seal({ stop: 'website', ts: new Date(Date.now() - 3_600_000).toISOString() }, cfg.key)) // old
+    await post(v, seal({ stop: 'website', ts: new Date().toISOString() }, cfg.key))
+    const stop = await s.waitFor(m => m.params?.meta?.source === 'stop', 5000, 'stop')
+    assert.equal(stop.params.meta.note_id, n.id)
+    assert.match(stop.params.content, /tapped Stop/)
+    await sleep(300)
+    assert.equal(s.pushes().filter(m => m.params.meta.source === 'stop').length, 1)
+    await s.stop()
+  })
+
   test('sessions that aren\'t listening don\'t offer approvals or forward prompts', async () => {
     const dir = tmpDir(); const cfg = pairDir(dir)
     const s = startServer(dir, { init: false, env: { CLAUDE_WATCH_NOTES_CHANNEL: '' } })
@@ -390,6 +446,29 @@ describe('recurring tasks and the Projects screen', () => {
     assert.equal([...a.pushes(), ...b.pushes()].length, 1)
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'schedules.json'), 'utf8'))
     assert.deepEqual(saved.list.map(s => s.id), ['tests', 'later'])
+    await a.stop(); await b.stop()
+  })
+
+  test('daily recap: one line per chat of the notes done today, sent once after the recap hour', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const notes = path.join(dir, 'notes'); fs.mkdirSync(notes)
+    const today = new Date().toISOString(), yesterday = new Date(Date.now() - 2 * 86_400_000).toISOString()
+    const save = n => fs.writeFileSync(path.join(notes, `${n.id}.json`), JSON.stringify(n))
+    save({ id: 'a', text: 'add dark mode\nand make it nice', status: 'done', doneAt: today, chat: 'website' })
+    save({ id: 'b', text: 'fix the footer', status: 'done', doneAt: today, chat: 'website' })
+    save({ id: 'c', text: 'make a game', status: 'done', doneAt: today, to: 'game' })
+    save({ id: 'd', text: 'old', status: 'done', doneAt: yesterday, chat: 'website' })
+    save({ id: 'e', text: 'still going', status: 'sent', chat: 'website' })
+    save({ id: 'f', text: 'emailed', status: 'done', doneAt: today, source: 'email', chat: 'website' })
+    const env = { CLAUDE_WATCH_NOTES_SWEEP_MS: '200', CLAUDE_WATCH_NOTES_RECAP_HOUR: '0' }
+    const a = startServer(dir, { env }), b = startServer(dir, { env })
+    await Promise.all([a.ready, b.ready])
+    await sleep(1200)
+    const sent = (await (await fetch(`${cfg.topicURL}-s/json?poll=1&since=all`)).text()).trim().split('\n').filter(Boolean)
+      .map(l => openBox(JSON.parse(l).message, cfg.key))
+    assert.equal(sent.length, 1) // once, from two sessions and several sweeps
+    assert.deepEqual(sent[0].lines, [{ chat: 'game', done: ['make a game'], count: 1 },
+      { chat: 'website', done: ['add dark mode', 'fix the footer'], count: 2 }])
     await a.stop(); await b.stop()
   })
 
@@ -641,7 +720,7 @@ describe('host command (new chats from the watch)', () => {
     fs.symlinkSync(path.join(root, 'app'), path.join(root, 'app-link'))
     fs.writeFileSync(path.join(root, 'notes.txt'), '')
     const h = spawn(process.execPath, [CLI, 'host', root], {
-      env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1' },
+      env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1', CLAUDE_WATCH_NOTES_CHECK_MS: '100' },
     })
     spawned.add(h)
     let out = ''
@@ -653,6 +732,8 @@ describe('host command (new chats from the watch)', () => {
     const [a] = await announced()
     assert.deepEqual(a.projects, ['app', 'app-link', 'website']) // symlinks only when they stay inside
     assert.equal(typeof a.host, 'string')
+    await sleep(800) // checked every 100ms here, but nothing changed: not sent again (ntfy.sh's daily limit)
+    assert.equal((await announced()).filter(m => m.host).length, 1)
     await connected(`${cfg.topic}-n`)
 
     const ask = (r, key = cfg.key) => post(`${cfg.topicURL}-n`, seal({ ts: new Date().toISOString(), ...r }, key))
@@ -789,6 +870,16 @@ describe('host command (new chats from the watch)', () => {
     assert.equal(last.args[last.args.indexOf('--resume') + 1], session)
     assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'host-chats.json'), 'utf8')).web.session, session) // a replayed request didn't start it over
     assert.equal(ran().filter(r => r.prompt.includes(first.id)).length, 1) // nothing re-run after the restart
+
+    // Stop on the watch interrupts the note the chat is running.
+    const slow = note('SLOW rebuild everything', { to: 'web' })
+    await post(cfg.topicURL, seal(slow, cfg.key))
+    await until(() => ran().some(r => r.prompt.includes(slow.id)), 'slow note started')
+    await connected(`${cfg.topic}-n`)
+    await post(`${cfg.topicURL}-n`, seal({ ts: new Date().toISOString(), stop: 'web' }, cfg.key))
+    await until(() => saved(slow.id).status === 'stopped', 'stopped')
+    assert.equal(saved(slow.id).summary, 'Stopped from the watch.')
+    assert.ok(ran().at(-1).args.includes('mcp__handoff__watch_ask'))
     h.kill('SIGTERM'); await new Promise(r => h.on('exit', r))
   })
 })

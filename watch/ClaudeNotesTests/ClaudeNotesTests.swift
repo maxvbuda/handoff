@@ -223,6 +223,103 @@ final class ClaudeNotesTests: XCTestCase {
         XCTAssertEqual(verdicts.first?["chat"] as? String, "e2e-chat")
     }
 
+    func testQuestionsFromClaudeAreAnsweredWithAnOption() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let key = SymmetricKey(data: p.key)
+        let store = freshStore()
+        store.setPairing(p)
+        let body = try JSONSerialization.data(withJSONObject: ["q": "q0123456789ab", "question": "Red or blue?",
+                                                               "options": ["Red", "Blue"], "chat": "e2e-chat"])
+        _ = try await Ntfy.publish(body, key: key, to: URL(string: p.topicURL.absoluteString + "-p")!)
+        await store.checkApprovals()
+        let q = try XCTUnwrap(store.approvals.first { $0.id == "q0123456789ab" })
+        XCTAssertEqual(q.what, "Red or blue?")
+        XCTAssertEqual(q.options, ["Red", "Blue"])
+        let sent = await store.choose(q, "Blue")
+        XCTAssertTrue(sent)
+        await store.checkApprovals()
+        XCTAssertFalse(store.approvals.contains { $0.id == q.id }) // answered here: gone for good
+
+        let answers = try await sealedMessages(p, "-v")
+        let a = try XCTUnwrap(answers.last { $0["a"] as? String == "q0123456789ab" })
+        XCTAssertEqual(a["choice"] as? String, "Blue")
+        XCTAssertEqual(a["chat"] as? String, "e2e-chat")
+    }
+
+    func testStopAndShipIt() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let store = freshStore()
+        store.setPairing(p)
+        let stopped = await store.stop("e2e-other") // a `handoff start` chat: told on "<topic>-v"
+        XCTAssertTrue(stopped)
+        let sent = try await sealedMessages(p, "-v")
+        XCTAssertEqual(sent.last?["stop"] as? String, "e2e-other")
+        store.shipIt("e2e-other")
+        XCTAssertEqual(store.notes.first?.text, Store.shipIt)
+        XCTAssertEqual(store.notes.first?.to, "e2e-other")
+        try await wait("ship it delivered") { store.pending == 0 }
+    }
+
+    func testScreenshotsAreKeptAndSavedOnesStay() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let key = SymmetricKey(data: p.key)
+        let store = freshStore()
+        store.setPairing(p)
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        let shots = URL(string: p.topicURL.absoluteString + "-i")!
+        func send(_ n: Int) async throws {
+            for i in 0..<n {
+                let body = try JSONSerialization.data(withJSONObject: ["i": png, "chat": "shot \(i)"])
+                _ = try await Ntfy.publish(body, key: key, to: shots)
+            }
+        }
+        try await send(7)
+        await store.checkScreenshot()
+        XCTAssertEqual(store.shots.map(\.chat), ["shot 6", "shot 5", "shot 4", "shot 3", "shot 2"]) // newest 5
+        XCTAssertNotNil(store.image(store.shots[0]))
+        let kept = store.shots[4]
+        store.toggleSave(kept)
+        try await send(5)
+        await store.checkScreenshot()
+        XCTAssertEqual(store.shots.count, 6) // 5 new ones, and the saved one
+        XCTAssertTrue(store.shots.contains { $0.id == kept.id && $0.saved })
+        XCTAssertEqual(Store(defaults: store.defaults).shots, store.shots) // remembered
+        store.deleteShot(kept)
+        XCTAssertFalse(store.shots.contains { $0.id == kept.id })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: Store.shotFile(kept.id).path))
+    }
+
+    func testEveningRecapArrives() async throws {
+        let p = try XCTUnwrap(Self.pairing)
+        let store = freshStore()
+        store.setPairing(p)
+        let body = try JSONSerialization.data(withJSONObject: ["recap": "2026-11-12", "lines": [
+            ["chat": "website", "done": ["add dark mode", "fix the footer"], "count": 2]]])
+        _ = try await Ntfy.publish(body, key: SymmetricKey(data: p.key), to: URL(string: p.topicURL.absoluteString + "-s")!)
+        await store.checkSuggestion()
+        XCTAssertEqual(store.recap, Recap(day: "2026-11-12", lines: [.init(chat: "website", done: ["add dark mode", "fix the footer"], count: 2)]))
+        XCTAssertNil(store.suggestion) // a recap isn't a suggestion
+    }
+
+    func testQuickRepliesCanBeChanged() {
+        let store = freshStore()
+        XCTAssertEqual(store.quickReplies, Store.defaultQuickReplies)
+        store.quickReplies.append("Make it faster")
+        store.quickReplies.removeFirst()
+        XCTAssertEqual(Store(defaults: store.defaults).quickReplies, Array(Store.defaultQuickReplies.dropFirst()) + ["Make it faster"])
+    }
+
+    /// Everything sealed with our key on "<topic><suffix>", oldest first.
+    private func sealedMessages(_ p: Pairing, _ suffix: String) async throws -> [[String: Any]] {
+        let (data, _) = try await Relay.session.data(from: URL(string: p.topicURL.absoluteString + "\(suffix)/json?poll=1&since=all")!)
+        return data.split(separator: UInt8(ascii: "\n")).compactMap { line in
+            guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: line),
+                  let box = ev.message.flatMap({ Data(base64Encoded: $0) }),
+                  let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: SymmetricKey(data: p.key)) else { return nil }
+            return try? JSONSerialization.jsonObject(with: plain) as? [String: Any]
+        }
+    }
+
     func testQuickReplySendsToTheChosenChat() async throws {
         let store = freshStore()
         store.setPairing(try XCTUnwrap(Self.pairing))

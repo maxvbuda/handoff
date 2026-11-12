@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Stands in for `claude -p` in host tests: records how it was called, prints stream-json like the
-// real thing, and fails on request (a prompt containing "FAIL").
+// real thing, fails on request (a prompt containing "FAIL") and works for a long time on "SLOW".
 import fs from 'node:fs'
 
 let prompt = ''
@@ -13,6 +13,7 @@ const session = flag('--session-id') || flag('--resume')
 const say = m => process.stdout.write(JSON.stringify({ session_id: session, ...m }) + '\n')
 say({ type: 'system', subtype: 'init' })
 say({ type: 'assistant', message: { content: [{ type: 'text', text: 'On it.' }, { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } })
+if (prompt.includes('SLOW')) await new Promise(r => setTimeout(r, 60_000)) // until stopped
 if (prompt.includes('FAIL')) {
   say({ type: 'result', is_error: true, result: 'something broke' })
   process.exit(1)

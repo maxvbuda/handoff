@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Jot ideas on your Apple Watch; Claude Code works on them while you're away.",
   "type": "module",
   "bin": {
