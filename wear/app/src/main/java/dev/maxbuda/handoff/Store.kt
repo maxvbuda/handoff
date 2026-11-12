@@ -34,8 +34,10 @@ import kotlin.time.Duration.Companion.seconds
 
 // Jot ideas on your wrist; Claude Code does them while you're away.
 // By design there is no response view: you get a buzz and a checkmark, nothing to read.
-// What comes back is Claude's suggested next prompt, which you can accept with a tap, and
-// permission prompts from `handoff start` chats, which you can allow or deny.
+// What comes back is Claude's suggested next prompt, which you can accept with a tap,
+// screenshots (or GIFs) when Claude changed something you can look at, permission prompts from
+// `handoff start` chats, which you can allow or deny, a question when Claude needs you to choose,
+// and each evening a recap: the notes each chat finished that day, in your own words.
 
 data class Note(val id: String, val text: String, val ts: Long, val to: String? = null, val sent: Boolean = false) {
     fun json(): JSONObject = JSONObject().put("id", id).put("text", text).put("ts", ts).put("to", to).put("sent", sent)
@@ -47,8 +49,34 @@ data class Note(val id: String, val text: String, val ts: Long, val to: String? 
 /** A next prompt Claude suggested when it finished a note (watch_note_done's `suggestion`). */
 data class Suggestion(val id: String, val text: String, val chat: String? = null)
 
-/** A permission prompt from a `handoff start` chat, answered here or in the terminal (whichever comes first). */
-data class Approval(val id: String, val tool: String, val what: String, val input: String, val chat: String? = null)
+/**
+ * A permission prompt from a `handoff start` chat, answered here or in the terminal (whichever comes
+ * first). Or, with `options`, a question Claude asked (watch_ask): `what` is the question.
+ */
+data class Approval(val id: String, val tool: String, val what: String, val input: String, val chat: String? = null,
+                    val options: List<String>? = null)
+
+/** A screenshot (or GIF) Claude sent. The picture is a file (Store.shotFile); the newest few are kept, saved ones until deleted. */
+data class Shot(val id: String, val chat: String? = null, val saved: Boolean = false, val at: Long = System.currentTimeMillis()) {
+    fun json(): JSONObject = JSONObject().put("id", id).put("chat", chat).put("saved", saved).put("at", at)
+    companion object {
+        fun from(o: JSONObject) = Shot(o.getString("id"), o.optStringOrNull("chat"), o.optBoolean("saved"), o.optLong("at"))
+    }
+}
+
+/** The evening recap: the notes each chat finished today, in the user's words. */
+data class Recap(val day: String, val lines: List<Line>) {
+    data class Line(val chat: String, val done: List<String>, val count: Int)
+    fun json(): JSONObject = JSONObject().put("recap", day).put("lines", JSONArray(lines.map {
+        JSONObject().put("chat", it.chat).put("done", JSONArray(it.done)).put("count", it.count)
+    }))
+    companion object {
+        fun from(o: JSONObject): Recap? {
+            val lines = o.optJSONArray("lines")?.objects()?.map { Line(it.getString("chat"), it.optJSONArray("done")?.strings() ?: emptyList(), it.optInt("count")) }
+            return if (o.has("recap") && !lines.isNullOrEmpty()) Recap(o.getString("recap"), lines) else null
+        }
+    }
+}
 
 /** A note Claude gets on a schedule, run by the Mac (runDueSchedules in server/relay.mjs). */
 data class Recurring(
@@ -106,12 +134,24 @@ object Store {
     /** The chat new notes go to; null sends to any open chat. */
     var target by mutableStateOf<String?>(null); private set
     var pairing by mutableStateOf<Pairing?>(null); private set
+    /** Screenshots and GIFs from Claude, newest first: the last few, plus any you saved. */
+    var shots by mutableStateOf(listOf<Shot>()); private set
+    /** This evening's recap, until dismissed or the next one comes. */
+    var recap by mutableStateOf<Recap?>(null); private set
+    /** One-tap notes (Quick reply), editable there. */
+    var quickReplies by mutableStateOf(listOf<String>()); private set
     var theme by mutableStateOf(Theme.Clay); private set
     var themedBackground by mutableStateOf(true); private set
 
     const val CHAT_WINDOW = "20m" // chats announce themselves when they change, and every 15 minutes
     const val APPROVAL_WINDOW = "10m" // older prompts have likely been answered at the Mac
     private const val KEEP = 12
+    const val KEEP_SHOTS = 5 // unsaved
+    /** The biggest screenshot download (sealed): a 4 MB GIF, as the Mac allows, plus base64 twice. */
+    const val MAX_DOWNLOAD = 8_000_000
+    /** What Ship it sends. */
+    const val SHIP_IT = "Ship it: commit all the changes with a clear message and push them. If this project is deployed " +
+        "somewhere (a website with a deploy script or hosting set up), deploy it too. Don't change anything else."
     private val retryDelay = 15.seconds
 
     private var sending: Job? = null
@@ -132,7 +172,12 @@ object Store {
         theme = Theme.entries.firstOrNull { it.name == prefs.getString("theme", null) } ?: Theme.Clay
         themedBackground = prefs.getBoolean("themedBackground", true)
         pairing = PairingVault.load(prefs)
+        shots = prefs.getString("shots", null)?.let { a -> JSONArray(a).objects().map(Shot::from) } ?: emptyList()
+        recap = prefs.getString("recap", null)?.let { Recap.from(JSONObject(it)) }
+        quickReplies = prefs.getString("quickReplies", null)?.let { JSONArray(it).strings() } ?: defaultQuickReplies()
     }
+
+    fun defaultQuickReplies() = listOf(R.string.keep_going, R.string.commit_it, R.string.run_the_tests, R.string.undo_that).map(context::getString)
 
     // ----- settings -----
 
@@ -172,6 +217,23 @@ object Store {
 
     /** Sends a quick reply as a note, to the chosen chat. */
     fun sendQuick(text: String) = enqueue(text, target)
+
+    fun updateQuickReplies(list: List<String>) { quickReplies = list; prefs.edit().putString("quickReplies", JSONArray(list).toString()).apply() }
+
+    /** Ship it: asks `chat` to commit, push and deploy what it did. */
+    fun shipIt(chat: String) = enqueue(SHIP_IT, chat)
+
+    /**
+     * Stop: asks `chat` to stop the note it's working on. A `handoff host` chat is stopped by the host;
+     * a `handoff start` chat gets the message from its own server. Returns false if it couldn't be sent.
+     */
+    suspend fun stop(chat: String): Boolean {
+        val p = pairing ?: return false
+        val sent = if (chat in hostedChats) askHost(mapOf("stop" to chat))
+            else Relay.publish(JSONObject().put("stop", chat).put("ts", iso(System.currentTimeMillis())), p.key, "${p.topicURL}-v") != null
+        if (sent) Haptic.down(context)
+        return sent
+    }
 
     /** Tell Claude (the tile, or a voice note straight from the launcher): queues it for the chosen chat. */
     fun sendNow(text: String) { if (text.isNotBlank()) enqueue(text.trim(), target) }
@@ -265,6 +327,7 @@ object Store {
                 launch { checkChats() }
                 launch { checkSuggestion() }
                 launch { checkApprovals() }
+                launch { checkScreenshots() }
             }
         }
         refreshing = job
@@ -374,9 +437,11 @@ object Store {
         val answered = answered()
         val open = mutableListOf<Approval>()
         for (b in events.mapNotNull { it.body }) {
-            val id = b.optStringOrNull("p") ?: continue
+            val id = b.optStringOrNull("p") ?: b.optStringOrNull("q") ?: continue
             if (id in answered || open.any { it.id == id }) continue
-            open += Approval(id, b.optStringOrNull("tool") ?: "a tool", b.optString("what"), b.optString("input"), b.optStringOrNull("chat"))
+            val options = b.optJSONArray("options")?.strings()
+            open += if (b.has("q") && options != null) Approval(id, "", b.optString("question"), "", b.optStringOrNull("chat"), options)
+                else Approval(id, b.optStringOrNull("tool") ?: "a tool", b.optString("what"), b.optString("input"), b.optStringOrNull("chat"))
         }
         if (open.any { a -> approvals.none { it.id == a.id } }) Haptic.notification(context)
         if (open != approvals) approvals = open
@@ -390,24 +455,91 @@ object Store {
         val o = JSONObject().put("v", a.id).put("ok", allow).put("ts", iso(System.currentTimeMillis()))
         a.chat?.let { o.put("chat", it) }
         if (Relay.publish(o, p.key, "${p.topicURL}-v") == null) return false
-        prefs.edit().putString("answered", JSONArray((answered() + a.id).takeLast(50)).toString()).apply()
-        approvals = approvals.filter { it.id != a.id }
+        markAnswered(a)
         if (allow) Haptic.success(context) else Haptic.down(context)
         return true
     }
 
-    /** Picks up the newest suggestion the Mac posted to "<topic>-s" since we last looked. */
+    /** Answers a question Claude asked with one of its options. Returns false if it couldn't be sent. */
+    suspend fun choose(a: Approval, option: String): Boolean {
+        val p = pairing ?: return false
+        val o = JSONObject().put("a", a.id).put("choice", option).put("ts", iso(System.currentTimeMillis()))
+        a.chat?.let { o.put("chat", it) }
+        if (Relay.publish(o, p.key, "${p.topicURL}-v") == null) return false
+        markAnswered(a)
+        Haptic.success(context)
+        return true
+    }
+
+    private fun markAnswered(a: Approval) {
+        prefs.edit().putString("answered", JSONArray((answered() + a.id).takeLast(50)).toString()).apply()
+        approvals = approvals.filter { it.id != a.id }
+    }
+
+    /** Picks up the newest suggestion the Mac posted to "<topic>-s" since we last looked, and the evening recap. */
     suspend fun checkSuggestion() {
         val p = pairing ?: return
-        if (!suggestionsOn) return
         val since = prefs.getString("suggestionSince", null) ?: "12h"
         val events = Relay.poll("${p.topicURL}-s/json?poll=1&since=$since", p.key) ?: return
-        if (!suggestionsOn || pairing?.topicURL != p.topicURL) return // changed meanwhile
+        if (pairing?.topicURL != p.topicURL) return // changed meanwhile
         // Advance past everything seen, including junk, so it isn't fetched again.
         events.lastOrNull()?.let { prefs.edit().putString("suggestionSince", it.id).apply() }
-        events.lastOrNull { it.body?.optString("s")?.isNotEmpty() == true }?.let {
+        if (suggestionsOn) events.lastOrNull { it.body?.optString("s")?.isNotEmpty() == true }?.let {
             updateSuggestion(Suggestion(it.id, it.body!!.getString("s"), it.body.optStringOrNull("chat")))
         }
+        events.mapNotNull { e -> e.body?.let(Recap::from) }.lastOrNull()?.let { updateRecap(it); Haptic.notification(context) }
+    }
+
+    fun updateRecap(r: Recap?) { recap = r; prefs.edit().putString("recap", r?.json()?.toString()).apply() }
+
+    // ----- screenshots -----
+
+    fun shotFile(id: String) = java.io.File(java.io.File(context.filesDir, "shots").apply { mkdirs() }, id.filter(Char::isLetterOrDigit))
+
+    /**
+     * Picks up the screenshots chats posted to "<topic>-i" since we last looked (the newest few). They're
+     * too big for a relay message, so each is an attachment (kept about 3 hours) that we download.
+     */
+    suspend fun checkScreenshots() {
+        val p = pairing ?: return
+        val since = prefs.getString("screenshotSince", null) ?: "3h"
+        val events = Relay.poll("${p.topicURL}-i/json?poll=1&since=$since", p.key) ?: return
+        if (pairing?.topicURL != p.topicURL) return
+        val got = mutableListOf<Shot>()
+        for (ev in events.reversed()) { // newest first: only the latest few are kept
+            if (got.size >= KEEP_SHOTS) break
+            if (shots.any { it.id == ev.id }) continue
+            var body = ev.body
+            ev.attachment?.let { a ->
+                if (a.size > MAX_DOWNLOAD) return@let
+                // Not downloaded (offline, or it expired): try again next time, unless it's gone for good.
+                val sealed = Relay.download(a.url) ?: return
+                body = runCatching { JSONObject(String(Crypto.open(sealed, p.key))) }.getOrNull()
+            }
+            val bytes = body?.optStringOrNull("i")?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() } ?: continue
+            if (!Picture.isImage(bytes)) continue
+            val shot = Shot(ev.id, body.optStringOrNull("chat"))
+            if (runCatching { kotlinx.coroutines.withContext(Dispatchers.IO) { shotFile(shot.id).writeBytes(bytes) } }.isSuccess) got += shot
+        }
+        if (pairing?.topicURL != p.topicURL) return
+        if (got.isNotEmpty()) { updateShots(got + shots); Haptic.notification(context) }
+        events.lastOrNull()?.let { prefs.edit().putString("screenshotSince", it.id).apply() }
+    }
+
+    /** Save: keeps a shot until you delete it, however many new ones come. */
+    fun toggleSave(id: String) = updateShots(shots.map { if (it.id == id) it.copy(saved = !it.saved) else it })
+
+    fun deleteShot(id: String) {
+        shotFile(id).delete()
+        updateShots(shots.filter { it.id != id })
+    }
+
+    /** Keeps every saved shot and the newest few others. */
+    private fun updateShots(list: List<Shot>) {
+        val extra = list.filter { !it.saved }.drop(KEEP_SHOTS).map { it.id }.toSet()
+        extra.forEach { shotFile(it).delete() }
+        shots = list.filter { it.id !in extra }
+        prefs.edit().putString("shots", JSONArray(shots.map { it.json() }).toString()).apply()
     }
 
     // ----- recurring -----
@@ -449,9 +581,10 @@ object Store {
         status = emptyMap()
         if (schedules.isNotEmpty()) prefs.edit().putBoolean("schedulesUnsent", true).apply() // the new pairing's Mac needs the list
         updateSuggestion(null)
+        updateRecap(null)
         chats = emptyList(); projects = emptyList(); hostedChats = emptySet(); starting = emptySet(); approvals = emptyList()
         updateTarget(null)
-        prefs.edit().remove("suggestionSince").apply()
+        prefs.edit().remove("suggestionSince").remove("screenshotSince").apply()
         PairingVault.save(prefs, p)
         if (p != null) { Haptic.success(context); scope.launch { flush() } }
     }

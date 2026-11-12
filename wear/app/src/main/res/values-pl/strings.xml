@@ -86,4 +86,27 @@
         <item quantity="many">%1$d notatek czeka na wysłanie</item>
         <item quantity="other">%1$d notatki czeka na wysłanie</item>
     </plurals>
+    <string name="screenshot">Zrzut ekranu</string>
+    <string name="screenshot_from">Zrzut ekranu · %1$s</string>
+    <string name="all_screenshots">Wszystkie zrzuty (%1$d)</string>
+    <string name="today">Dzisiaj</string>
+    <string name="recap_line">%1$s · zrobione: %2$d</string>
+    <string name="saved">Zapisano</string>
+    <string name="sent_to">Wysłano do %1$s</string>
+    <string name="ship_it">Wypuść to</string>
+    <string name="save_hint">Zapisz, żeby został, gdy przyjdą nowsze zrzuty.</string>
+    <string name="no_screenshots">Brak zrzutów</string>
+    <string name="screenshots_footer">Zostaje %1$d najnowszych i te, które zapiszesz.</string>
+    <string name="screenshots">Zrzuty ekranu</string>
+    <string name="add_a_button">Dodaj przycisk</string>
+    <string name="reset_buttons">Przywróć przyciski</string>
+    <string name="edit_buttons">Edytuj przyciski</string>
+    <string name="stop">Zatrzymaj</string>
+    <string name="sent">Wysłano</string>
+    <string name="stop_q">Zatrzymać %1$s?</string>
+    <string name="stop_message">Claude przerwie notatkę, nad którą pracuje, i zachowa to, co już zrobił.</string>
+    <string name="keep_going">Kontynuuj</string>
+    <string name="commit_it">Zrób commit</string>
+    <string name="run_the_tests">Uruchom testy</string>
+    <string name="undo_that">Cofnij to</string>
 </resources>

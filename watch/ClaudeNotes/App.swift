@@ -833,7 +833,7 @@ final class Store {
     }
 }
 
-enum PairError: Error { case badCode, noAnswer, relay }
+enum PairError: Error { case badCode, noAnswer, relay, dailyLimit }
 
 /// One-time pairing. The code we show (typed into `handoff pair` on the Mac) derives, via HKDF, a
 /// pairing key and topic. We generate our own topic + key, send them sealed with the pairing key,
@@ -859,32 +859,48 @@ enum Pairer {
         let pairKey = derive("key", 32)
         let pairURL = URL(string: "\(Relay.base)/cwp-\(derive("topic", 16).hex)")!
 
-        let pairing = Pairing(topicURL: URL(string: "\(Relay.base)/cw-\(SymmetricKey(size: .bits128).hex)")!,
-                              key: SymmetricKey(size: .bits256).data)
+        let topic = "cw-\(SymmetricKey(size: .bits128).hex)"
+        let pairing = Pairing(topicURL: URL(string: "\(Relay.base)/\(topic)")!, key: SymmetricKey(size: .bits256).data)
         let nonce = SymmetricKey(size: .bits128).hex
 
         let offer = try JSONSerialization.data(withJSONObject: [
             "topic": pairing.topicURL.absoluteString, "key": pairing.key.base64EncodedString(), "n": nonce,
+            "moves": true, // we follow the Mac to its own relay if its answer names one
         ])
         // Listen for replies after our own offer's message id: no dependence on clocks agreeing.
-        guard let offerID = try await Ntfy.publish(offer, key: pairKey, to: pairURL) else { throw PairError.relay }
+        let offerID: String?
+        do { offerID = try await Ntfy.publish(offer, key: pairKey, to: pairURL) } catch is Ntfy.DailyLimit { throw PairError.dailyLimit }
+        guard let offerID else { throw PairError.relay }
         let url = URL(string: "\(pairURL.absoluteString)/json?since=\(offerID)")!
-        let acked = await withTaskGroup(of: Bool.self) { group in
+        let ack = await withTaskGroup(of: [String: String]?.self) { group in
             group.addTask { await waitForAck(nonce, at: url, key: pairKey) }
-            group.addTask { try? await Task.sleep(for: waitFor); return false }
-            let first = await group.next() ?? false
+            group.addTask { try? await Task.sleep(for: waitFor); return nil }
+            let first = await group.next() ?? nil
             group.cancelAll()
             return first
         }
         try Task.checkCancellation()
-        guard acked else { throw PairError.noAnswer }
+        guard let ack else { throw PairError.noAnswer }
+        // The Mac runs its own relay (`handoff relay setup`): the same topic, there instead.
+        if let relay = ack["relay"].flatMap(ownRelay) {
+            return Pairing(topicURL: relay.appending(path: topic), key: pairing.key)
+        }
         return pairing
+    }
+
+    /// An https address with nothing but a host (and port), like https://mac.tail1234.ts.net.
+    nonisolated static func ownRelay(_ s: String) -> URL? {
+        guard let c = URLComponents(string: s), c.scheme == "https", let host = c.host, !host.isEmpty,
+              c.path.isEmpty || c.path == "/", c.query == nil, c.user == nil else { return nil }
+        var clean = URLComponents()
+        clean.scheme = "https"; clean.host = host; clean.port = c.port
+        return clean.url
     }
 
     /// Streams the pairing topic (one open request, not a poll every few seconds: ntfy.sh limits
     /// requests per IP address, which the watch shares with the Mac at home) until the Mac's ack.
     /// A stream ends after Relay.session's 30s limit; then it reconnects, waiting longer if refused.
-    nonisolated private static func waitForAck(_ nonce: String, at url: URL, key: SymmetricKey) async -> Bool {
+    nonisolated private static func waitForAck(_ nonce: String, at url: URL, key: SymmetricKey) async -> [String: String]? {
         while !Task.isCancelled {
             var pause = Duration.seconds(1)
             if let (bytes, res) = try? await Relay.session.bytes(from: url) {
@@ -897,7 +913,7 @@ enum Pairer {
                               let ack = try? JSONDecoder().decode([String: String].self, from: plain),
                               ack["ack"] == nonce
                         else { continue }
-                        return true
+                        return ack
                     }
                 } catch {}
             } else {
@@ -905,7 +921,7 @@ enum Pairer {
             }
             try? await Task.sleep(for: pause)
         }
-        return false
+        return nil
     }
 }
 
@@ -920,14 +936,27 @@ enum Ntfy {
         let size: Int?
     }
 
+    /// ntfy.sh refused a message because this internet connection sent its daily allowance (error
+    /// 42908). Nothing gets through until it resets at midnight UTC.
+    struct DailyLimit: Error, Equatable {}
+
+    /// When ntfy.sh's daily limits reset: the next midnight UTC.
+    static var limitResets: Date {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        return utc.nextDate(after: .now, matching: DateComponents(hour: 0, minute: 0), matchingPolicy: .nextTime) ?? .now
+    }
+
     /// Seals with AES-GCM (nonce|ciphertext|tag, base64) and posts to the topic.
-    /// Returns the relay's message id, or nil if the relay didn't accept it.
+    /// Returns the relay's message id, or nil if the relay didn't accept it. Throws DailyLimit when
+    /// the relay's daily limit is used up.
     static func publish(_ plain: Data, key: SymmetricKey, to url: URL) async throws -> String? {
         guard let sealed = try AES.GCM.seal(plain, using: key).combined else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.httpMethod = "POST"
         req.httpBody = sealed.base64EncodedData()
         let (data, res) = try await Relay.session.data(for: req)
+        if (res as? HTTPURLResponse)?.statusCode == 429, String(decoding: data, as: UTF8.self).contains("42908") { throw DailyLimit() }
         guard (res as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return (try? JSONDecoder().decode(Event.self, from: data))?.id ?? ""
     }
@@ -996,6 +1025,8 @@ struct PairView: View {
                 failure = String(localized: "This code expired.")
             } catch PairError.relay {
                 failure = String(localized: "The relay is busy. Try again in a minute.")
+            } catch PairError.dailyLimit {
+                failure = String(localized: "The relay's daily message limit for your internet connection is used up. Try another network, like cellular, or try again after \(Ntfy.limitResets.formatted(date: .omitted, time: .shortened)).")
             } catch {
                 failure = String(localized: "Couldn't reach the relay. Check your connection.")
             }

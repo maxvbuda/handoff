@@ -84,4 +84,27 @@
         <item quantity="one">%1$d Notiz wartet auf Versand</item>
         <item quantity="other">%1$d Notizen warten auf Versand</item>
     </plurals>
+    <string name="screenshot">Screenshot</string>
+    <string name="screenshot_from">Screenshot · %1$s</string>
+    <string name="all_screenshots">Alle Screenshots (%1$d)</string>
+    <string name="today">Heute</string>
+    <string name="recap_line">%1$s · %2$d erledigt</string>
+    <string name="saved">Gesichert</string>
+    <string name="sent_to">An %1$s gesendet</string>
+    <string name="ship_it">Veröffentlichen</string>
+    <string name="save_hint">Sichere ihn, damit er bleibt, wenn neue Screenshots kommen.</string>
+    <string name="no_screenshots">Keine Screenshots</string>
+    <string name="screenshots_footer">Die %1$d neuesten bleiben, und alle, die du sicherst.</string>
+    <string name="screenshots">Screenshots</string>
+    <string name="add_a_button">Taste hinzufügen</string>
+    <string name="reset_buttons">Tasten zurücksetzen</string>
+    <string name="edit_buttons">Tasten bearbeiten</string>
+    <string name="stop">Stoppen</string>
+    <string name="sent">Gesendet</string>
+    <string name="stop_q">%1$s stoppen?</string>
+    <string name="stop_message">Claude bricht die aktuelle Notiz ab und behält, was schon erledigt ist.</string>
+    <string name="keep_going">Mach weiter</string>
+    <string name="commit_it">Committen</string>
+    <string name="run_the_tests">Tests ausführen</string>
+    <string name="undo_that">Mach das rückgängig</string>
 </resources>

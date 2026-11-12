@@ -43,8 +43,17 @@ object Relay {
     /** For streams: ntfy sends a keepalive every 45s or so, and the stream is restarted every 30s. */
     private val streaming: OkHttpClient = http.newBuilder().readTimeout(60, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
 
-    /** One relay message: its id, and its body if it was sealed with our key. */
-    class Event(val id: String, val body: JSONObject?)
+    /** One relay message: its id, its body if it was sealed with our key, or its attachment (bodies of 4 KB or more). */
+    class Event(val id: String, val body: JSONObject?, val attachment: Attachment? = null)
+    class Attachment(val url: String, val size: Long)
+
+    /** For screenshots and GIFs, which can be a few megabytes: more time to download. */
+    private val downloads: OkHttpClient = http.newBuilder().readTimeout(20, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
+
+    /** Downloads an attachment as text (a sealed message), or null if it failed or expired. */
+    suspend fun download(url: String): String? = run(downloads.newCall(Request.Builder().url(url).build())) { call ->
+        call.execute().use { res -> if (res.isSuccessful) res.body.string() else null }
+    }
 
     /** GETs a poll (`?poll=1`) and returns its messages, oldest first, or null if the relay didn't answer. */
     suspend fun poll(url: String, key: ByteArray): List<Event>? = run(http.newCall(Request.Builder().url(url).build())) { call ->
@@ -110,7 +119,8 @@ object Relay {
         val id = ev.optString("id").ifEmpty { return null }
         val body = ev.optString("message").takeIf { it.isNotEmpty() }
             ?.let { m -> runCatching { JSONObject(String(Crypto.open(m, key))) }.getOrNull() }
-        return Event(id, body)
+        val attachment = ev.optJSONObject("attachment")?.let { a -> a.optString("url").takeIf { it.isNotEmpty() }?.let { Attachment(it, a.optLong("size")) } }
+        return Event(id, body, attachment)
     }
 }
 
@@ -182,14 +192,26 @@ object Pairer {
         val pairKey = derive("key", 32)
         val pairURL = "${Relay.base}/cwp-${derive("topic", 16).hex()}"
 
-        val pairing = Pairing("${Relay.base}/cw-${Crypto.randomBytes(16).hex()}", Crypto.randomBytes(32))
+        val topic = "cw-${Crypto.randomBytes(16).hex()}"
+        val pairing = Pairing("${Relay.base}/$topic", Crypto.randomBytes(32))
         val nonce = Crypto.randomBytes(16).hex()
-        val offer = JSONObject().put("topic", pairing.topicURL).put("key", pairing.key.b64()).put("n", nonce)
+        // "moves": we follow the Mac to its own relay if its answer names one.
+        val offer = JSONObject().put("topic", pairing.topicURL).put("key", pairing.key.b64()).put("n", nonce).put("moves", true)
         // Listen for replies after our own offer's message id: no dependence on clocks agreeing.
         val offerID = Relay.publish(offer, pairKey, pairURL) ?: throw PairException(PairException.Reason.Relay)
         val acked = withTimeoutOrNull(waitFor) {
             Relay.stream("$pairURL/json?since=$offerID", pairKey) { ev -> ev.body?.takeIf { it.optString("ack") == nonce } }
         }
-        return if (acked != null) pairing else throw PairException(PairException.Reason.NoAnswer)
+            ?: throw PairException(PairException.Reason.NoAnswer)
+        // The Mac runs its own relay (`handoff relay setup`): the same topic, there instead.
+        val own = ownRelay(acked.optString("relay"))
+        return if (own != null) Pairing("$own/$topic", pairing.key) else pairing
+    }
+
+    /** An https address with nothing but a host (and port), like https://mac.tail1234.ts.net. */
+    fun ownRelay(s: String): String? {
+        val u = runCatching { java.net.URI(s) }.getOrNull() ?: return null
+        if (u.scheme != "https" || u.host.isNullOrEmpty() || !(u.rawPath.isNullOrEmpty() || u.rawPath == "/") || u.rawQuery != null || u.rawUserInfo != null) return null
+        return "https://${u.host}" + if (u.port > 0) ":${u.port}" else ""
     }
 }

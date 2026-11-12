@@ -83,4 +83,27 @@
     <plurals name="waiting_count">
         <item quantity="other">送信待ち %1$d 件</item>
     </plurals>
+    <string name="screenshot">スクリーンショット</string>
+    <string name="screenshot_from">スクリーンショット · %1$s</string>
+    <string name="all_screenshots">すべてのスクリーンショット（%1$d）</string>
+    <string name="today">今日</string>
+    <string name="recap_line">%1$s · %2$d件完了</string>
+    <string name="saved">保存済み</string>
+    <string name="sent_to">%1$sに送信しました</string>
+    <string name="ship_it">公開する</string>
+    <string name="save_hint">保存すると、新しいスクリーンショットが届いても残ります。</string>
+    <string name="no_screenshots">スクリーンショットはありません</string>
+    <string name="screenshots_footer">最新の%1$d件と、保存したものが残ります。</string>
+    <string name="screenshots">スクリーンショット</string>
+    <string name="add_a_button">ボタンを追加</string>
+    <string name="reset_buttons">ボタンをリセット</string>
+    <string name="edit_buttons">ボタンを編集</string>
+    <string name="stop">停止</string>
+    <string name="sent">送信済み</string>
+    <string name="stop_q">%1$sを停止しますか？</string>
+    <string name="stop_message">Claudeは作業中のメモを止め、ここまでの作業は残します。</string>
+    <string name="keep_going">続けて</string>
+    <string name="commit_it">コミットして</string>
+    <string name="run_the_tests">テストを実行して</string>
+    <string name="undo_that">元に戻して</string>
 </resources>

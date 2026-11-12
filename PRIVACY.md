@@ -8,6 +8,7 @@ Handoff has three parts: an Apple Watch app, the `handoff` command that runs on 
 
 - Notes you write are stored on your watch until they're delivered, and the 12 most recent are kept as a history list.
 - Each note is encrypted on the watch with AES-256-GCM, using a key that only your watch and your Mac have. It's then sent to a public relay, [ntfy.sh](https://ntfy.sh), on a random topic.
+- If you set up your own relay (`handoff relay setup`), notes go to that relay on your own Mac instead, through Tailscale Funnel, and only pairing uses ntfy.sh.
 - The relay only ever sees encrypted data. It can't read your notes. ntfy.sh keeps messages for up to about 12 hours, and see ntfy's own [privacy policy](https://ntfy.sh/docs/privacy/). Like any web service, it can see your IP address.
 - The encryption key is stored in the watch's Keychain and never leaves your devices, except once, during pairing, when it's sent to your Mac encrypted with a key derived from the one-time pairing code.
 
@@ -60,6 +61,7 @@ All of it is encrypted with your key, so ntfy.sh can't read any of it:
 - **In your email (`handoff mail` only):** the notes you emailed and Claude's replies stay in your mailbox until you delete them.
 - **On the watch:** up to 12 notes of history (until you delete them in Settings), your draft, the last suggestion, the last 5 screenshots and any you saved, the evening recap, your quick buttons, and your chosen chat. The Smart Stack widget keeps a copy of the suggestion and what each chat is working on, on the watch only.
 - **On the relay (ntfy.sh):** encrypted messages for up to about 12 hours, and file attachments (notes and screenshots of 4 KB or more) for about 3 hours.
+- **On your own relay (if you set one up):** encrypted messages and attachments for up to 12 hours, on your Mac in `~/.claude-watch-notes/relay`.
 - **By the developer:** nothing, because no data ever reaches the developer.
 
 ## What we collect

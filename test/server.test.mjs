@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { startMock } from './mock-ntfy.mjs'
+import { startRelay } from '../server/relay-server.mjs'
 
 const SERVER = new URL('../server/handoff.mjs', import.meta.url).pathname
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -991,10 +992,10 @@ describe('pair command', () => {
   const derive = (c, info, n) => Buffer.from(crypto.hkdfSync('sha256', c, 'claude-watch-notes-pair', info, n))
 
   // `typed`: the code the user types on the Mac (the watch shows it); otherwise the Mac shows `c`.
-  function runPair(dir, c, timeoutMs = 15000, typed) {
+  function runPair(dir, c, timeoutMs = 15000, typed, env = {}) {
     const p = spawn(process.execPath, [SERVER, 'pair', ...(typed === undefined ? [] : [typed])], {
       env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_PAIR_CODE: c,
-        CLAUDE_WATCH_NOTES_NO_SIM: '1', CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS: String(timeoutMs) },
+        CLAUDE_WATCH_NOTES_NO_SIM: '1', CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS: String(timeoutMs), CLAUDE_WATCH_NOTES_OWN_RELAY: '', ...env },
     })
     spawned.add(p)
     let outText = ''
@@ -1002,17 +1003,17 @@ describe('pair command', () => {
     return { p, get out() { return outText }, exit: new Promise(r => p.on('exit', r)) }
   }
   // What the watch does (Pairer.pair in App.swift).
-  async function watchPair(c, { topic, key, n = crypto.randomBytes(16).toString('hex') } = {}) {
+  async function watchPair(c, { topic, key, n = crypto.randomBytes(16).toString('hex'), moves } = {}) {
     const pk = derive(c, 'key', 32)
     const pairURL = `${mock.url}/cwp-${derive(c, 'topic', 16).toString('hex')}`
     topic ??= `${mock.url}/cw-${crypto.randomBytes(16).toString('hex')}`
     key ??= crypto.randomBytes(32).toString('base64')
-    const offer = await post(pairURL, seal({ topic, key, n }, pk))
+    const offer = await post(pairURL, seal({ topic, key, n, ...(moves && { moves }) }, pk))
     for (let i = 0; i < 40; i++) {
       await sleep(100)
       const res = await (await fetch(`${pairURL}/json?poll=1&since=${offer.id}`)).text()
       for (const line of res.split('\n').filter(Boolean)) {
-        try { if (openBox(JSON.parse(line).message, pk).ack === n) return { topic, key } } catch {}
+        try { const ack = openBox(JSON.parse(line).message, pk); if (ack.ack === n) return { topic, key, ack } } catch {}
       }
     }
     return null
@@ -1029,6 +1030,38 @@ describe('pair command', () => {
     const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'))
     assert.deepEqual(cfg, { topicURL: w.topic, key: w.key })
     assert.equal(fs.statSync(path.join(dir, 'config.json')).mode & 0o777, 0o600)
+  })
+
+  test('with your own relay, a watch that can move is told to, and the Mac follows', async () => {
+    const own = await startRelay({ dir: tmpDir() })
+    try {
+      const dir = tmpDir(); const c = code()
+      const run = runPair(dir, c, 15000, undefined, { CLAUDE_WATCH_NOTES_OWN_RELAY: own.url })
+      const w = await watchPair(c, { moves: true })
+      assert.ok(w, 'watch never got an ack'); assert.equal(await run.exit, 0)
+      assert.equal(w.ack.relay, own.url)
+      const name = w.topic.slice(mock.url.length)
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')), { topicURL: own.url + name, key: w.key })
+      assert.match(run.out, /through your own relay/)
+    } finally { await own.close() }
+  })
+
+  test('an older watch, or your own relay not answering, stays on ntfy.sh', async () => {
+    const own = await startRelay({ dir: tmpDir() })
+    try {
+      const dir = tmpDir(); const c = code()
+      const run = runPair(dir, c, 15000, undefined, { CLAUDE_WATCH_NOTES_OWN_RELAY: own.url })
+      const w = await watchPair(c) // no "moves": Hand-Off 1.2 and older
+      assert.equal(await run.exit, 0); assert.equal(w.ack.relay, undefined)
+      assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).topicURL, w.topic)
+      assert.match(run.out, /too old for your own relay/)
+    } finally { await own.close() }
+    const dir = tmpDir(); const c = code()
+    const run = runPair(dir, c, 15000, undefined, { CLAUDE_WATCH_NOTES_OWN_RELAY: 'http://127.0.0.1:9' })
+    const w = await watchPair(c, { moves: true })
+    assert.equal(await run.exit, 0); assert.equal(w.ack.relay, undefined)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).topicURL, w.topic)
+    assert.match(run.out, /didn't answer, so this pairing uses ntfy.sh/)
   })
 
   test('the watch posting before the Mac starts listening still pairs', async () => {
@@ -1135,5 +1168,89 @@ describe('inbox and done commands (/handoff:inbox without the plugin running a s
     assert.equal(saved.status, 'done'); assert.equal(saved.summary, 'Renamed it'); assert.equal(saved.suggestion, 'add a test')
     assert.match((await run(['inbox'], env)).out, /No pending watch notes/)
     assert.equal((await run(['done', 'nope', 'x'], env)).code, 1)
+  })
+})
+
+describe('your own relay (handoff relay)', () => {
+  const topic = () => `cw-${crypto.randomBytes(16).toString('hex')}`
+  const poll = async (url, since = 'all') => (await (await fetch(`${url}/json?poll=1&since=${since}`)).text()).split('\n').filter(Boolean).map(l => JSON.parse(l))
+
+  test('publishes, polls since an id, streams, and keeps messages across a restart', async () => {
+    const dir = tmpDir()
+    let r = await startRelay({ dir })
+    const t = `${r.url}/${topic()}`
+    const a = await post(t, 'one'), b = await post(t, 'two')
+    assert.deepEqual((await poll(t)).map(e => e.message), ['one', 'two'])
+    assert.deepEqual((await poll(t, a.id)).map(e => e.id), [b.id])
+    assert.deepEqual((await poll(t, '10m')).length, 2)
+    const ctrl = new AbortController(), got = []
+    const res = await fetch(`${t}/json?since=${b.id}`, { signal: ctrl.signal })
+    const reading = (async () => { for await (const c of res.body) { got.push(...String(Buffer.from(c)).split('\n').filter(Boolean).map(l => JSON.parse(l))); if (got.some(e => e.message === 'three')) break } })()
+    await sleep(100); await post(t, 'three'); await reading; ctrl.abort()
+    assert.equal(got[0].event, 'open'); assert.ok(got.some(e => e.message === 'three'))
+    await r.close(); await sleep(200) // lets fetch drop its kept-alive connection to the old one
+    r = await startRelay({ dir, port: Number(new URL(t).port) })
+    try { assert.deepEqual((await poll(t)).map(e => e.message), ['one', 'two', 'three']) } finally { await r.close() }
+  })
+
+  test('big bodies become attachments, with no 2 MB limit like ntfy.sh', async () => {
+    const r = await startRelay({ dir: tmpDir(), publicURL: undefined })
+    try {
+      const t = `${r.url}/${topic()}-i`
+      const big = crypto.randomBytes(5 * 1024 * 1024).toString('base64') // about 7 MB, like a sealed 4 MB GIF
+      const ev = await post(t, big)
+      assert.equal(ev.attachment.size, big.length)
+      assert.equal(await (await fetch(ev.attachment.url)).text(), big)
+      assert.equal((await fetch(`${t}`, { method: 'POST', body: Buffer.alloc(17 * 1024 * 1024) })).status, 413)
+    } finally { await r.close() }
+  })
+
+  test("only Handoff's topics, and a health check", async () => {
+    const r = await startRelay({ dir: tmpDir() })
+    try {
+      assert.deepEqual(await (await fetch(`${r.url}/v1/health`)).json(), { healthy: true })
+      for (const bad of ['mytopic', 'cw-123', `cw-${'a'.repeat(32)}-xyz`, '..%2Fx'])
+        assert.equal((await fetch(`${r.url}/${bad}`, { method: 'POST', body: 'x' })).status, 404, bad)
+      assert.equal((await fetch(`${r.url}/file/..%2Fmessages.jsonl`)).status, 404)
+    } finally { await r.close() }
+  })
+
+  test('through ntfy.sh, a GIF over 1.1 MB is refused with advice', async () => {
+    const dir = tmpDir()
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ topicURL: `https://ntfy.sh/${topic()}`, key: crypto.randomBytes(32).toString('base64') }))
+    const s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_RELAY: 'http://127.0.0.1:9' } })
+    try {
+      await s.ready
+      const id = 'GIFTEST1'
+      fs.mkdirSync(path.join(dir, 'notes'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'notes', `${id}.json`), JSON.stringify({ id, text: 'x', at: new Date().toISOString(), status: 'sent' }))
+      const gif = path.join(dir, 'clip.gif')
+      fs.writeFileSync(gif, Buffer.concat([Buffer.from('GIF89a'), crypto.randomBytes(1200 * 1024)]))
+      const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: id, summary: 'ok', image: gif } })
+      assert.ok(r.result.isError); assert.match(r.result.content[0].text, /through ntfy.sh it must be under 1100 KB.*handoff relay setup/s)
+      assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'notes', `${id}.json`), 'utf8')).status, 'sent')
+    } finally { await s.stop() }
+  })
+
+  test("the Mac's server gets notes and sends a big GIF through it", async () => {
+    const r = await startRelay({ dir: tmpDir() })
+    const dir = tmpDir(), t = topic(), key = crypto.randomBytes(32)
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ topicURL: `${r.url}/${t}`, key: key.toString('base64') }))
+    const s = startServer(dir)
+    try {
+      await s.ready
+      await sleep(500)
+      const n = note('through my own relay')
+      await post(`${r.url}/${t}`, seal(n, key))
+      await s.waitFor(pushFor(n.id), 5000, 'note push')
+      const gif = path.join(dir, 'clip.gif')
+      fs.writeFileSync(gif, Buffer.concat([Buffer.from('GIF89a'), crypto.randomBytes(3 * 1024 * 1024)]))
+      const done = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: gif } })
+      assert.ok(!done.result.isError, JSON.stringify(done.result))
+      const [ev] = await poll(`${r.url}/${t}-i`)
+      const body = await (await fetch(ev.attachment.url)).text()
+      assert.ok(body.length > 4 * 1024 * 1024)
+      assert.equal(Buffer.from(openBox(body, key).i, 'base64').subarray(0, 6).toString(), 'GIF89a')
+    } finally { await s.stop(); await r.close() }
   })
 })

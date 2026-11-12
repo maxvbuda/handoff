@@ -10,6 +10,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
@@ -25,6 +28,12 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddComment
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.LocalShipping
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Circle
@@ -294,7 +303,13 @@ fun Navigation(jot: Boolean, jotHandled: () -> Unit) {
             ApprovalDetails(e.arguments?.getString("id") ?: "")
         }
         composable("to") { ChatPicker(Store.target) { Store.updateTarget(it); nav.popBackStack() } }
-        composable("quick") { QuickReplyScreen { nav.popBackStack() } }
+        composable("quick") { QuickReplyScreen(nav) { nav.popBackStack() } }
+        composable("quick/edit") { EditQuickRepliesScreen() }
+        composable("shot/{id}", listOf(navArgument("id") { type = NavType.StringType })) { e -> ShotScreen(nav, e.arguments?.getString("id") ?: "") }
+        composable("full/{id}", listOf(navArgument("id") { type = NavType.StringType })) { e -> FullScreenShot(e.arguments?.getString("id") ?: "") }
+        composable("gallery?chat={chat}", listOf(navArgument("chat") { type = NavType.StringType; nullable = true; defaultValue = null })) { e ->
+            GalleryScreen(nav, e.arguments?.getString("chat"))
+        }
         composable("projects") { ProjectsScreen() }
         composable("recurring") { RecurringScreen(nav) }
         composable("recurring/new") { NewRecurringScreen(nav) }
@@ -344,6 +359,24 @@ fun IdeasScreen(nav: NavHostController, jot: Boolean, jotHandled: () -> Unit) {
         } else null,
     ) {
         Store.approvals.forEach { approvalItems(it, nav) }
+
+        Store.shots.firstOrNull()?.let { shot ->
+            item { ListHeader { Text(shot.chat?.let { stringResource(R.string.screenshot_from, it) } ?: stringResource(R.string.screenshot)) } }
+            item(key = "shot" + shot.id) {
+                PictureView(shot.id, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { nav.navigate("shot/${Uri.encode(shot.id)}") })
+            }
+            if (Store.shots.size > 1) item { Item(stringResource(R.string.all_screenshots, Store.shots.size), Icons.Default.Collections) { nav.navigate("gallery") } }
+        }
+
+        Store.recap?.let { r ->
+            item { ListHeader { Text(stringResource(R.string.today)) } }
+            items(r.lines) { line ->
+                Item(stringResource(R.string.recap_line, line.chat, line.count), secondary = line.done.joinToString("\n")) {
+                    nav.navigate("gallery?chat=${Uri.encode(line.chat)}")
+                }
+            }
+            item { Item(stringResource(R.string.dismiss), Icons.Default.Close) { Store.updateRecap(null) } }
+        }
 
         Store.suggestion?.let { s ->
             item { ListHeader { Text(s.chat?.let { stringResource(R.string.suggestion_from, it) } ?: stringResource(R.string.suggestion)) } }
@@ -422,6 +455,11 @@ private fun chatLabel(name: String) = when {
 /** A permission prompt: what Claude wants to do, and Allow / Deny. Tap the text to read all of it. */
 private fun ScalingLazyListScope.approvalItems(a: Approval, nav: NavHostController) {
     item(key = "h" + a.id) { ListHeader { Text(a.chat?.let { stringResource(R.string.claude_asks_from, it) } ?: stringResource(R.string.claude_asks)) } }
+    a.options?.let { options ->
+        item(key = "q" + a.id) { Caption(a.what, Color.White) }
+        item(key = "o" + a.id) { QuestionButtons(a, options) }
+        return
+    }
     item(key = "d" + a.id) {
         Item(a.what.ifEmpty { stringResource(R.string.use_tool, a.tool) }, secondary = a.input) { nav.navigate("approval/${Uri.encode(a.id)}") }
     }
@@ -445,6 +483,24 @@ private fun ApprovalButtons(a: Approval) {
             FilledTonalButton(onClick = { answer(false) }, enabled = !busy, modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.filledTonalButtonColors(contentColor = Color(0xFFFF6B6B), iconColor = Color(0xFFFF6B6B)),
                 icon = { Icon(Icons.Default.Close, contentDescription = null) }, label = { Text(stringResource(R.string.deny), maxLines = 1) })
+        }
+        if (failed) Caption(stringResource(R.string.couldnt_reach_mac_retry), Color(0xFFFF6B6B))
+    }
+}
+
+/** A question Claude asked: one button per answer. */
+@Composable
+private fun QuestionButtons(a: Approval, options: List<String>) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    Column {
+        options.forEach { option ->
+            Item(option, tonal = false, enabled = !busy) {
+                busy = true; failed = false
+                scope.launch { failed = !Store.choose(a, option); busy = false }
+            }
+            Spacer(Modifier.size(4.dp))
         }
         if (failed) Caption(stringResource(R.string.couldnt_reach_mac_retry), Color(0xFFFF6B6B))
     }
@@ -474,22 +530,95 @@ fun ChatPicker(selected: String?, pick: (String?) -> Unit) {
 
 // ---------- other screens ----------
 
-/** Ready-made notes ("Commit it", "Run the tests"…): one tap sends it and goes back. */
+/** Ready-made notes ("Commit it", "Run the tests"…): one tap sends it and goes back. Edit buttons changes them. */
 @Composable
-fun QuickReplyScreen(done: () -> Unit) {
+fun QuickReplyScreen(nav: NavHostController, done: () -> Unit) {
     ListScreen(Store.target ?: stringResource(R.string.quick_reply)) {
-        items(QUICK_REPLIES) { text -> Item(text) { Store.sendQuick(text); done() } }
+        items(Store.quickReplies) { text -> Item(text) { Store.sendQuick(text); done() } }
+        item { Item(stringResource(R.string.edit_buttons), Icons.Default.Edit) { nav.navigate("quick/edit") } }
     }
 }
 
-/** In English, as on the Apple Watch: they're notes for Claude. */
-private val QUICK_REPLIES = listOf("Keep going", "Commit it", "Run the tests", "Undo that")
+/** Add your own quick buttons; tap one to delete it. */
+@Composable
+fun EditQuickRepliesScreen() {
+    var deleting by remember { mutableStateOf<String?>(null) }
+    val add = rememberTextInput(stringResource(R.string.add_a_button)) { t ->
+        val text = t.trim()
+        if (text.isNotEmpty() && text !in Store.quickReplies) Store.updateQuickReplies(Store.quickReplies + text)
+    }
+    ListScreen(stringResource(R.string.edit_buttons)) {
+        item { Item(stringResource(R.string.add_a_button), Icons.Default.Add, tonal = false, onClick = add) }
+        items(Store.quickReplies) { text -> Item(text, Icons.Default.Delete) { deleting = text } }
+        if (Store.quickReplies != Store.defaultQuickReplies()) {
+            item { Item(stringResource(R.string.reset_buttons)) { Store.updateQuickReplies(Store.defaultQuickReplies()) } }
+        }
+    }
+    val d = deleting
+    AlertDialog(
+        visible = d != null,
+        onDismissRequest = { deleting = null },
+        title = { Text(stringResource(R.string.delete)) },
+        text = { Text(d ?: "", maxLines = 3) },
+        confirmButton = { AlertDialogDefaults.ConfirmButton(onClick = { d?.let { Store.updateQuickReplies(Store.quickReplies - it) }; deleting = null }) },
+        dismissButton = { AlertDialogDefaults.DismissButton(onClick = { deleting = null }) },
+    )
+}
+
+/** Every screenshot kept on the watch (or one chat's), newest first. */
+@Composable
+fun GalleryScreen(nav: NavHostController, chat: String?) {
+    val shots = Store.shots.filter { chat == null || it.chat == chat }
+    ListScreen(chat ?: stringResource(R.string.screenshots)) {
+        if (shots.isEmpty()) item { Caption(stringResource(R.string.no_screenshots)) }
+        items(shots, key = { it.id }) { shot ->
+            Column(Modifier.fillMaxWidth().clickable { nav.navigate("shot/${Uri.encode(shot.id)}") }) {
+                PictureView(shot.id, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+                Caption(listOfNotNull(if (shot.saved) "★" else null, shot.chat,
+                    java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(shot.at))).joinToString(" · "))
+            }
+        }
+        if (shots.isNotEmpty()) item { Caption(stringResource(R.string.screenshots_footer, Store.KEEP_SHOTS)) }
+    }
+}
+
+/** One screenshot: tap it to see it full screen. Save keeps it; Ship it asks its chat to commit, push and deploy. */
+@Composable
+fun ShotScreen(nav: NavHostController, id: String) {
+    val shot = Store.shots.firstOrNull { it.id == id } ?: return
+    var shipped by remember { mutableStateOf(false) }
+    ListScreen(shot.chat ?: stringResource(R.string.screenshot)) {
+        item { PictureView(shot.id, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { nav.navigate("full/${Uri.encode(id)}") }) }
+        item {
+            Item(stringResource(if (shot.saved) R.string.saved else R.string.save),
+                if (shot.saved) Icons.Default.Bookmark else Icons.Default.BookmarkBorder, tonal = false) { Store.toggleSave(id) }
+        }
+        shot.chat?.let { chat ->
+            item {
+                Item(if (shipped) stringResource(R.string.sent_to, chat) else stringResource(R.string.ship_it), Icons.Default.LocalShipping,
+                    enabled = !shipped) { Store.shipIt(chat); shipped = true }
+            }
+        }
+        item { Item(stringResource(R.string.delete), Icons.Default.Delete, danger = true) { Store.deleteShot(id); nav.popBackStack() } }
+        if (!shot.saved) item { Caption(stringResource(R.string.save_hint)) }
+    }
+}
+
+/** A screenshot filling the screen. */
+@Composable
+fun FullScreenShot(id: String) {
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) { PictureView(id, Modifier.fillMaxSize()) }
+}
 
 /** Each open chat: what it's working on, and its folder's git status. */
 @Composable
 fun ProjectsScreen() {
     LaunchedEffect(Unit) { while (true) { Store.checkChats(); delay(10.seconds) } }
     val accent = MaterialTheme.colorScheme.primary
+    val scope = rememberCoroutineScope()
+    var stopping by remember { mutableStateOf<String?>(null) }
+    // Stopped or shipped from here, until the chat's status changes.
+    var sent by remember(Store.status) { mutableStateOf(setOf<String>()) }
     ListScreen(stringResource(R.string.projects)) {
         if (Store.chats.isEmpty()) item { Caption(stringResource(R.string.no_chats)) }
         items(Store.chats) { name ->
@@ -507,9 +636,27 @@ fun ProjectsScreen() {
                     Text(listOfNotNull(b, if (s.changes > 0) "${s.changes} changed" else "clean", if (s.ahead > 0) "${s.ahead} to push" else null)
                         .joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 }
+                if (s.working != null) {
+                    Item(stringResource(R.string.stop), Icons.Default.Stop, danger = true, enabled = name !in sent) { stopping = name }
+                } else if (s.changes > 0 || s.ahead > 0) {
+                    Item(stringResource(if (name in sent) R.string.sent else R.string.ship_it), Icons.Default.LocalShipping, tonal = false,
+                        enabled = name !in sent) { Store.shipIt(name); sent = sent + name }
+                }
             }
         }
     }
+    val st = stopping
+    AlertDialog(
+        visible = st != null,
+        onDismissRequest = { stopping = null },
+        title = { Text(stringResource(R.string.stop_q, st ?: "")) },
+        text = { Text(stringResource(R.string.stop_message)) },
+        confirmButton = { AlertDialogDefaults.ConfirmButton(onClick = {
+            stopping = null
+            st?.let { name -> scope.launch { if (Store.stop(name)) sent = sent + name } }
+        }) },
+        dismissButton = { AlertDialogDefaults.DismissButton(onClick = { stopping = null }) },
+    )
 }
 
 /** Notes Claude gets on a schedule: run the tests every morning, check something every hour. Tap one to delete it. */

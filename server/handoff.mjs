@@ -15,7 +15,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { CONFIG, DIR, NOTES, RELAY, alive, currentClaim, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, sendRecapIfDue, tryClaim, writeAtomic } from './relay.mjs'
+import { CONFIG, DIR, NOTES, RELAY, alive, ownRelay, currentClaim, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, sendRecapIfDue, tryClaim, writeAtomic } from './relay.mjs'
 
 const CURSOR = path.join(DIR, 'cursor')
 
@@ -53,10 +53,24 @@ if (process.argv[2] === 'pair') {
       const topicOK = typeof p.topic === 'string' && p.topic.startsWith(`${RELAY}/cw-`) &&
         /^[0-9a-f]{32}$/.test(p.topic.slice(RELAY.length + 4))
       if (typeof p.n !== 'string' || Buffer.from(String(p.key), 'base64').length !== 32 || !topicOK) continue
+      // Watches that can move (Hand-Off 1.3 and later say so) move to your own relay, if it's up.
+      // The ack tells the watch where; the topic name stays the same.
+      const own = p.moves === true ? await reachable(ownRelay()) : null
+      const topicURL = own ? `${own}${p.topic.slice(RELAY.length)}` : p.topic
+      const res = await fetch(pairURL, { method: 'POST', body: seal(own ? { ack: p.n, relay: own } : { ack: p.n }, pk) })
+      if (!res.ok) {
+        console.error(res.status === 429
+          ? '  ntfy.sh didn\'t let the answer to your watch through: this internet connection used up its messages\n' +
+            '  for today. Try again later, or from another network (like a phone hotspot).'
+          : `  The relay refused the answer to your watch (HTTP ${res.status}). Try again.`)
+        process.exit(1)
+      }
       fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
-      fs.writeFileSync(CONFIG, JSON.stringify({ topicURL: p.topic, key: p.key }, null, 2), { mode: 0o600 })
-      await fetch(pairURL, { method: 'POST', body: seal({ ack: p.n }, pk) })
-      console.log('  Paired. Running Claude Code sessions pick this up automatically.\n\n  Next: handoff start\n')
+      fs.writeFileSync(CONFIG, JSON.stringify({ topicURL, key: p.key }, null, 2), { mode: 0o600 })
+      console.log(`  Paired${own ? `, through your own relay (${own})` : ''}. Running Claude Code sessions pick this up automatically.\n\n  Next: handoff start\n`)
+      if (ownRelay() && !own) console.log(p.moves === true
+        ? `  Your own relay (${ownRelay()}) didn't answer, so this pairing uses ntfy.sh. Check it with: handoff relay status\n`
+        : '  This watch app is too old for your own relay, so it uses ntfy.sh. Update Hand-Off and pair again.\n')
       process.exit(0)
     }
   } catch (e) {
@@ -65,6 +79,12 @@ if (process.argv[2] === 'pair') {
     else console.error('  Timed out. Run pair again for a new code.')
   }
   process.exit(1)
+}
+
+// The relay's address if it answers its health check, else null.
+async function reachable(url) {
+  if (!url) return null
+  try { return (await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(10_000) })).ok ? url.replace(/\/+$/, '') : null } catch { return null }
 }
 
 // ---------- MCP over stdio ----------
@@ -156,7 +176,7 @@ const sendImage = (img, noteId) => postBack('i', { i: img.toString('base64'), no
 // Claude makes the screenshot (this server runs nothing); we only check it's a small PNG, JPEG or
 // GIF. A GIF (a clip Claude turned from a video) may be much bigger, but sealed (base64 twice) it
 // must stay under the watch's 8 MB download limit (Store.maxDownload).
-const IMAGE_MAX = 300 * 1024, GIF_MAX = 4 * 1024 * 1024
+const IMAGE_MAX = 300 * 1024, GIF_MAX = 4 * 1024 * 1024, NTFY_GIF_MAX = 1100 * 1024
 function readImage(p) {
   const f = path.resolve(p)
   let st
@@ -169,6 +189,9 @@ function readImage(p) {
   const gif = ['GIF87a', 'GIF89a'].includes(b.subarray(0, 6).toString('latin1'))
   if (!png && !jpeg && !gif) throw new Error(`${f} isn't a PNG, JPEG or GIF. Nothing was marked done. To send a video, turn it into a GIF with ffmpeg first.`)
   if (!gif && st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
+  // ntfy.sh refuses files over 2 MB, which a sealed GIF of more than about 1.1 MB is. Your own relay has no such limit.
+  if (gif && st.size > NTFY_GIF_MAX && readConfig()?.topicURL?.startsWith('https://ntfy.sh/'))
+    throw new Error(`The GIF is ${Math.round(st.size / 1024)} KB, and through ntfy.sh it must be under ${Math.round(NTFY_GIF_MAX / 1024)} KB. Nothing was marked done. Make the clip shorter (a smaller -t in ffmpeg; keep the quality) and try again. (With your own relay, \`handoff relay setup\`, GIFs can be up to 4 MB.)`)
   return b
 }
 

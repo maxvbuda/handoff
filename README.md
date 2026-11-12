@@ -85,15 +85,27 @@ With no address the first time, it uses your Gmail account if Mail has exactly o
 - The first time, macOS asks whether your terminal can control Mail. Click **OK**, or turn it on later in System Settings → Privacy & Security → Automation.
 - It checks Mail once a minute and looks back two days. Your Mac has to be awake, which `handoff start` already takes care of.
 
+## Your own relay (optional)
+
+ntfy.sh is free, but it limits each internet connection to 250 messages a day and files to 2 MB. When your home connection uses up its messages, the watch says the relay is busy until the next day, and GIFs bigger than about 1 MB don't get through. To get rid of both limits, run Handoff's own relay on your Mac:
+
+```sh
+handoff relay setup    # needs Tailscale (free): install it from the Mac App Store and sign in first
+```
+
+It starts the relay on your Mac (and again at every login), and Tailscale Funnel gives it a fixed https address, like https://your-mac.tail1234.ts.net, so the watch reaches it from anywhere, on Wi-Fi or cellular. Then pair again: on the watch, **Settings → Unpair**, open Hand-Off and run `handoff pair CODE`. Pairing still starts on ntfy.sh (one message each way); after that nothing uses ntfy.sh. It needs Hand-Off 1.3 or later; older watch apps stay on ntfy.sh.
+
+Like ntfy.sh, the relay only ever sees encrypted messages. It keeps them for 12 hours in `~/.claude-watch-notes/relay`. While your Mac is off or asleep the watch can't send notes, but no Claude session could work on them then anyway. `handoff relay status` checks it, and `handoff relay off` goes back to ntfy.sh.
+
 ## Notes
 
-- ntfy.sh keeps messages for about 12 hours. The server saves them to disk as soon as they arrive, so this only matters if no Claude session is running for that whole time. To self-host ntfy, change `RELAY` in `server/relay.mjs` and `Relay.base` in `App.swift`.
+- ntfy.sh keeps messages for about 12 hours. The server saves them to disk as soon as they arrive, so this only matters if no Claude session is running for that whole time.
 - ntfy turns messages of 4 KB or more into file attachments, which ntfy.sh keeps for only about 3 hours. The server handles those, but a very long note (roughly 2,900+ characters) needs a session running within that window.
 
 ## Tests
 
 ```sh
-node --test test/server.test.mjs     # server: 69 tests against a mock relay (protocol, crypto, dedupe,
+node --test test/server.test.mjs     # server: 76 tests against a mock relay (protocol, crypto, dedupe,
                                      #   multi-session races, reconnects, stalls, re-pairing, pair command)
 node test/watch-e2e.mjs              # watch app in the SE 3 simulator + real pair/MCP server, via mock relay
 node test/watch-e2e.mjs --real-relay # same UI flow through the public ntfy.sh

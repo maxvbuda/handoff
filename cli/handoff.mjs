@@ -8,6 +8,7 @@
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
 //   handoff mail [address]    email Claude too, through the Mail app
+//   handoff relay [setup|status|off]   run your own relay instead of ntfy.sh
 //   handoff inbox             print notes that aren't done (what /handoff:inbox runs)
 //   handoff done <id> <summary> [--suggestion S] [--image FILE]   mark a note done
 
@@ -18,7 +19,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CONFIG, DIR, NOTES, alive, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, sendRecapIfDue, tryClaim, writeAtomic } from '../server/relay.mjs'
+import { CONFIG, DIR, NOTES, OWN_RELAY, alive, ownRelay, events, noteFile, open, readConfig, runDueSchedules, saveNote, saveSchedules, seal, sendRecapIfDue, tryClaim, writeAtomic } from '../server/relay.mjs'
 
 const SERVER = fileURLToPath(new URL('../server/handoff.mjs', import.meta.url))
 
@@ -96,6 +97,8 @@ if (cmd === 'start') {
   host(path.resolve(rest[0] || process.cwd()))
 } else if (cmd === 'mail') {
   mail(rest[0])
+} else if (cmd === 'relay') {
+  relay(rest[0])
 } else if (cmd === 'inbox') {
   toolCall('watch_inbox', {}, 3000)
 } else if (cmd === 'done') {
@@ -120,6 +123,10 @@ if (cmd === 'start') {
                             go to your handoff start sessions, and the summary comes back
                             as a reply. Uses the Mail app; keep this running. Only that
                             one account is listened to, and it's remembered for next time
+  handoff relay setup       Use your own relay instead of ntfy.sh (no daily limit): runs it on
+                            this Mac and puts it on the internet with Tailscale Funnel
+  handoff relay status      Check that your own relay answers
+  handoff relay off         Go back to ntfy.sh
   handoff inbox             Print the notes that aren't done yet (/handoff:inbox runs it)
   handoff done <note_id> <summary> [--suggestion "next prompt"] [--image screenshot.jpg]
                             Mark a note done (and send a suggestion, screenshot or GIF to the watch)
@@ -636,4 +643,106 @@ async function mail(arg) {
     await replies()
     await new Promise(r => setTimeout(r, Number(process.env.CLAUDE_WATCH_NOTES_MAIL_MS) || 60_000))
   }
+}
+
+// ---------- your own relay ----------
+// ntfy.sh limits messages per day for each internet connection, and files to 2 MB. `handoff relay
+// setup` runs Handoff's own relay (server/relay-server.mjs) on this Mac at login, and Tailscale
+// Funnel gives it a fixed https address the watch can reach from anywhere. Pairing again moves the
+// watch to it; until then (and for watches too old to move) everything stays on ntfy.sh.
+const RELAY_PORT = 8795
+const RELAY_DIR = path.join(DIR, 'relay')
+const AGENT = 'dev.maxbuda.handoff.relay'
+const AGENT_PLIST = path.join(os.homedir(), 'Library/LaunchAgents', `${AGENT}.plist`)
+
+function tailscale() {
+  for (const t of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']) {
+    try { execFileSync(t, ['version'], { stdio: 'ignore' }); return t } catch {}
+  }
+  return null
+}
+
+async function healthy(url) {
+  try { return (await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(10_000) })).ok } catch { return false }
+}
+
+async function relay(sub) {
+  const settings = (() => { try { return JSON.parse(fs.readFileSync(OWN_RELAY, 'utf8')) } catch { return {} } })()
+  if (!sub) { // the relay itself (the login item runs this)
+    const { startRelay } = await import('../server/relay-server.mjs')
+    const r = await startRelay({ port: settings.port || RELAY_PORT, dir: RELAY_DIR, publicURL: settings.url })
+    console.log(`Handoff relay on ${r.local}${settings.url ? `, on the internet as ${settings.url}` : ''}`)
+    return
+  }
+  if (sub === 'status') {
+    const url = ownRelay()
+    if (!url) return console.log('Not using your own relay: the watch and this Mac talk through ntfy.sh. Set one up with: handoff relay setup')
+    const local = await healthy(`http://127.0.0.1:${settings.port || RELAY_PORT}`), pub = local && await healthy(url)
+    const paired = readConfig()?.topicURL?.startsWith(url + '/')
+    console.log(`Your relay: ${url}\n  On this Mac: ${local ? 'running' : 'not running (log in again, or run: handoff relay setup)'}\n` +
+      `  From the internet: ${pub ? 'reachable' : 'not reachable (is Tailscale on? Run: handoff relay setup)'}\n` +
+      `  Your watch: ${paired ? 'paired through it' : 'not using it yet. On the watch: Settings, Unpair; then open Hand-Off and run handoff pair CODE'}`)
+    return
+  }
+  if (sub === 'off') {
+    if (process.platform === 'darwin') {
+      try { execFileSync('launchctl', ['bootout', `gui/${process.getuid()}/${AGENT}`], { stdio: 'ignore' }) } catch {}
+      fs.rmSync(AGENT_PLIST, { force: true })
+    }
+    const ts = tailscale()
+    if (ts && settings.url) try { execFileSync(ts, ['funnel', '--https=443', 'off'], { stdio: 'ignore' }) } catch {}
+    fs.rmSync(OWN_RELAY, { force: true })
+    console.log('Your own relay is off. To go back to ntfy.sh, pair again: on the watch, Settings, Unpair; then open Hand-Off and run handoff pair CODE')
+    return
+  }
+  if (sub !== 'setup') { console.error('Usage: handoff relay [setup|status|off]'); process.exit(1) }
+
+  if (process.platform !== 'darwin') { console.error('handoff relay setup is for macOS. Elsewhere, run `handoff relay` and put port 8795 on the internet over https yourself.'); process.exit(1) }
+  const ts = tailscale()
+  if (!ts) {
+    console.error('Tailscale isn\'t installed. It gives your relay a fixed web address, for free:\n' +
+      '  1. Install Tailscale from the Mac App Store (or https://tailscale.com/download/mac) and sign in.\n' +
+      '  2. Run handoff relay setup again.')
+    process.exit(1)
+  }
+  let self
+  try { self = JSON.parse(execFileSync(ts, ['status', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).Self } catch {}
+  const dns = self?.DNSName?.replace(/\.$/, '')
+  if (!dns) { console.error('Tailscale is installed but not signed in. Open Tailscale, sign in, then run handoff relay setup again.'); process.exit(1) }
+  const url = `https://${dns}`
+
+  // The relay, at login and whenever it stops.
+  fs.mkdirSync(RELAY_DIR, { recursive: true, mode: 0o700 })
+  fs.writeFileSync(OWN_RELAY, JSON.stringify({ url, port: RELAY_PORT }, null, 2), { mode: 0o600 })
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  fs.mkdirSync(path.dirname(AGENT_PLIST), { recursive: true })
+  fs.writeFileSync(AGENT_PLIST, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${AGENT}</string>
+  <key>ProgramArguments</key><array><string>${esc(process.execPath)}</string><string>${esc(fileURLToPath(import.meta.url))}</string><string>relay</string></array>
+  <key>EnvironmentVariables</key><dict><key>CLAUDE_WATCH_NOTES_DIR</key><string>${esc(DIR)}</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${esc(path.join(RELAY_DIR, 'relay.log'))}</string>
+  <key>StandardErrorPath</key><string>${esc(path.join(RELAY_DIR, 'relay.log'))}</string>
+</dict></plist>
+`)
+  try { execFileSync('launchctl', ['bootout', `gui/${process.getuid()}/${AGENT}`], { stdio: 'ignore' }) } catch {}
+  execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, AGENT_PLIST])
+  console.log(`Started your relay on this Mac (it starts again at login).\nPutting it on the internet as ${url} with Tailscale Funnel…`)
+  // The first time, Tailscale may print a link to turn Funnel on for your account: open it, then run setup again.
+  try { execFileSync(ts, ['funnel', '--bg', String(RELAY_PORT)], { stdio: 'inherit', timeout: 120_000 }) } catch {
+    console.error('\nTailscale Funnel didn\'t start. If it printed a link, open it to allow Funnel, then run handoff relay setup again.')
+    process.exit(1)
+  }
+  let ok = false
+  for (let i = 0; i < 12 && !ok; i++) { ok = await healthy(url); if (!ok) await new Promise(r => setTimeout(r, 5000)) }
+  if (!ok) {
+    console.error(`\n${url} doesn't answer yet. A new Funnel address can take a minute or two; check with: handoff relay status`)
+    process.exit(1)
+  }
+  console.log(`\nYour relay works: ${url}\n` +
+    'Now move your watch to it: on the watch, Settings, Unpair. Then open Hand-Off and run: handoff pair CODE\n' +
+    '(Pairing starts on ntfy.sh, so it needs ntfy.sh to let one message through. After that, nothing uses ntfy.sh.)')
 }

@@ -13,8 +13,8 @@ android {
         applicationId = "dev.maxbuda.handoff"
         minSdk = 33 // Wear OS 4 and newer (Pixel Watch 4 and 5 run Wear OS 6)
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.1"
+        versionCode = 2
+        versionName = "1.3"
     }
 
     buildFeatures {

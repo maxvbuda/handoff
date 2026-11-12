@@ -83,4 +83,27 @@
     <plurals name="waiting_count">
         <item quantity="other">%1$d 条待发送</item>
     </plurals>
+    <string name="screenshot">截图</string>
+    <string name="screenshot_from">截图 · %1$s</string>
+    <string name="all_screenshots">全部截图（%1$d）</string>
+    <string name="today">今天</string>
+    <string name="recap_line">%1$s · 完成 %2$d 项</string>
+    <string name="saved">已保存</string>
+    <string name="sent_to">已发送给 %1$s</string>
+    <string name="ship_it">发布</string>
+    <string name="save_hint">保存后，新截图到来时也会保留。</string>
+    <string name="no_screenshots">没有截图</string>
+    <string name="screenshots_footer">保留最新的 %1$d 张，以及你保存的截图。</string>
+    <string name="screenshots">截图</string>
+    <string name="add_a_button">添加按钮</string>
+    <string name="reset_buttons">重置按钮</string>
+    <string name="edit_buttons">编辑按钮</string>
+    <string name="stop">停止</string>
+    <string name="sent">已发送</string>
+    <string name="stop_q">停止 %1$s？</string>
+    <string name="stop_message">Claude 会停止正在处理的笔记，并保留已完成的部分。</string>
+    <string name="keep_going">继续</string>
+    <string name="commit_it">提交</string>
+    <string name="run_the_tests">运行测试</string>
+    <string name="undo_that">撤销</string>
 </resources>

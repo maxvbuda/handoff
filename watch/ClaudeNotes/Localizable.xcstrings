@@ -5934,6 +5934,58 @@
           }
         }
       }
+    },
+    "The relay's daily message limit for your internet connection is used up. Try another network, like cellular, or try again after %@.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dzienny limit wiadomości przekaźnika dla twojego internetu się wyczerpał. Spróbuj innej sieci, np. komórkowej, albo spróbuj ponownie po %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se agotó el límite diario de mensajes del relé para tu conexión a internet. Prueba otra red, como la móvil, o vuelve a intentarlo después de las %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La limite quotidienne de messages du relais pour ta connexion internet est atteinte. Essaie un autre réseau, comme le cellulaire, ou réessaie après %@."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das tägliche Nachrichtenlimit des Relays für deine Internetverbindung ist aufgebraucht. Versuch ein anderes Netz, etwa Mobilfunk, oder versuch es nach %@ erneut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il limite giornaliero di messaggi del relay per la tua connessione è esaurito. Prova un'altra rete, come quella cellulare, o riprova dopo le %@."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O limite diário de mensagens do relay para sua conexão acabou. Tente outra rede, como a celular, ou tente de novo depois das %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このインターネット接続のリレーの1日のメッセージ上限に達しました。モバイル通信など別のネットワークを使うか、%@以降にもう一度お試しください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的网络连接今天的中继消息额度已用完。请换一个网络（例如蜂窝网络），或在 %@ 之后再试。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

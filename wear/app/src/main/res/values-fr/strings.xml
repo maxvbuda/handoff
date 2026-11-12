@@ -84,4 +84,27 @@
         <item quantity="one">%1$d note en attente d\'envoi</item>
         <item quantity="other">%1$d notes en attente d\'envoi</item>
     </plurals>
+    <string name="screenshot">Capture</string>
+    <string name="screenshot_from">Capture · %1$s</string>
+    <string name="all_screenshots">Toutes les captures (%1$d)</string>
+    <string name="today">Aujourd’hui</string>
+    <string name="recap_line">%1$s · %2$d terminées</string>
+    <string name="saved">Enregistrée</string>
+    <string name="sent_to">Envoyé à %1$s</string>
+    <string name="ship_it">Publie-le</string>
+    <string name="save_hint">Enregistre-la pour la garder quand d’autres captures arrivent.</string>
+    <string name="no_screenshots">Aucune capture</string>
+    <string name="screenshots_footer">Les %1$d plus récentes sont gardées, et celles que tu enregistres.</string>
+    <string name="screenshots">Captures</string>
+    <string name="add_a_button">Ajouter un bouton</string>
+    <string name="reset_buttons">Réinitialiser les boutons</string>
+    <string name="edit_buttons">Modifier les boutons</string>
+    <string name="stop">Arrêter</string>
+    <string name="sent">Envoyé</string>
+    <string name="stop_q">Arrêter %1$s ?</string>
+    <string name="stop_message">Claude arrête la note en cours et garde ce qu’il a déjà fait.</string>
+    <string name="keep_going">Continue</string>
+    <string name="commit_it">Fais un commit</string>
+    <string name="run_the_tests">Lance les tests</string>
+    <string name="undo_that">Annule ça</string>
 </resources>

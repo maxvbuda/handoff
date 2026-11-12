@@ -84,4 +84,27 @@
         <item quantity="one">%1$d nota da inviare</item>
         <item quantity="other">%1$d note da inviare</item>
     </plurals>
+    <string name="screenshot">Screenshot</string>
+    <string name="screenshot_from">Screenshot · %1$s</string>
+    <string name="all_screenshots">Tutti gli screenshot (%1$d)</string>
+    <string name="today">Oggi</string>
+    <string name="recap_line">%1$s · %2$d fatte</string>
+    <string name="saved">Salvato</string>
+    <string name="sent_to">Inviato a %1$s</string>
+    <string name="ship_it">Pubblicalo</string>
+    <string name="save_hint">Salvalo per tenerlo quando arrivano screenshot più recenti.</string>
+    <string name="no_screenshots">Nessuno screenshot</string>
+    <string name="screenshots_footer">Restano i %1$d più recenti e quelli che salvi.</string>
+    <string name="screenshots">Screenshot</string>
+    <string name="add_a_button">Aggiungi un pulsante</string>
+    <string name="reset_buttons">Ripristina pulsanti</string>
+    <string name="edit_buttons">Modifica pulsanti</string>
+    <string name="stop">Ferma</string>
+    <string name="sent">Inviato</string>
+    <string name="stop_q">Fermare %1$s?</string>
+    <string name="stop_message">Claude interrompe la nota su cui lavora e tiene ciò che ha già fatto.</string>
+    <string name="keep_going">Continua</string>
+    <string name="commit_it">Fai il commit</string>
+    <string name="run_the_tests">Esegui i test</string>
+    <string name="undo_that">Annulla</string>
 </resources>

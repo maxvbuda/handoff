@@ -10,6 +10,14 @@ export const DIR = process.env.CLAUDE_WATCH_NOTES_DIR || path.join(os.homedir(),
 export const CONFIG = path.join(DIR, 'config.json')
 export const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')) } catch { return null } }
 
+// Your own relay (`handoff relay setup`): its public https address, which new pairings move to.
+// Pairing itself still starts on ntfy.sh, where the watch looks for the Mac.
+export const OWN_RELAY = path.join(DIR, 'relay.json')
+export const ownRelay = () => {
+  if (process.env.CLAUDE_WATCH_NOTES_OWN_RELAY !== undefined) return process.env.CLAUDE_WATCH_NOTES_OWN_RELAY || null
+  try { return JSON.parse(fs.readFileSync(OWN_RELAY, 'utf8')).url || null } catch { return null }
+}
+
 // AES-256-GCM in CryptoKit's "combined" layout: nonce(12) | ciphertext | tag(16), base64.
 export function open(b64, key) {
   const b = Buffer.from(b64, 'base64')

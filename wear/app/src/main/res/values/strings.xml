@@ -86,4 +86,27 @@
         <item quantity="one">%1$d note waiting to send</item>
         <item quantity="other">%1$d notes waiting to send</item>
     </plurals>
+    <string name="screenshot">Screenshot</string>
+    <string name="screenshot_from">Screenshot · %1$s</string>
+    <string name="all_screenshots">All screenshots (%1$d)</string>
+    <string name="today">Today</string>
+    <string name="recap_line">%1$s · %2$d done</string>
+    <string name="saved">Saved</string>
+    <string name="sent_to">Sent to %1$s</string>
+    <string name="ship_it">Ship it</string>
+    <string name="save_hint">Save it to keep it after newer screenshots come in.</string>
+    <string name="no_screenshots">No screenshots</string>
+    <string name="screenshots_footer">The newest %1$d are kept, and any you save.</string>
+    <string name="screenshots">Screenshots</string>
+    <string name="add_a_button">Add a button</string>
+    <string name="reset_buttons">Reset buttons</string>
+    <string name="edit_buttons">Edit buttons</string>
+    <string name="stop">Stop</string>
+    <string name="sent">Sent</string>
+    <string name="stop_q">Stop %1$s?</string>
+    <string name="stop_message">Claude stops the note it\'s working on and keeps what it did so far.</string>
+    <string name="keep_going">Keep going</string>
+    <string name="commit_it">Commit it</string>
+    <string name="run_the_tests">Run the tests</string>
+    <string name="undo_that">Undo that</string>
 </resources>
