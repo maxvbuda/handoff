@@ -660,7 +660,8 @@ const readRelaySettings = () => { try { return JSON.parse(fs.readFileSync(OWN_RE
 function zrok() {
   // zrok 2 is `zrok2` from zrok's own installer and `zrok` from Homebrew.
   for (const z of ['zrok2', 'zrok', '/opt/homebrew/bin/zrok2', '/opt/homebrew/bin/zrok', '/usr/local/bin/zrok2', '/usr/local/bin/zrok']) {
-    try { execFileSync(z, ['version'], { stdio: 'ignore' }); return z } catch {}
+    // A full path: login items don't get your PATH.
+    try { execFileSync(z, ['version'], { stdio: 'ignore' }); return z.includes('/') ? z : execFileSync('/usr/bin/which', [z], { encoding: 'utf8' }).trim() } catch {}
   }
   return null
 }
@@ -753,12 +754,12 @@ async function relay(sub) {
   startAgent(AGENTS.share, [z, 'share', 'public', `http://127.0.0.1:${RELAY_PORT}`, '--name-selection', `public:${name}`, '--headless'], log)
   console.log('Started your relay on this Mac (it starts again at login). Putting it on the internet with zrok…')
 
-  // zrok prints the share's address once it's up.
+  // zrok prints the share's address once it's up ("access your zrok share at … handoff-….shares.zrok.io").
   let url
   for (let i = 0; i < 60 && !url; i++) {
     await new Promise(r => setTimeout(r, 1000))
-    const found = fs.readFileSync(log, 'utf8').match(/https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+(?=[\s"',\]}]|$)/gi) || []
-    url = found.find(u => u.toLowerCase().includes(name))
+    const host = new RegExp(`\\b${name}(?:\\.[a-z0-9-]+)+`, 'i').exec(fs.readFileSync(log, 'utf8'))?.[0]
+    if (host) url = `https://${host}`
   }
   if (!url) {
     console.error(`zrok didn't say its address within a minute. What it said is in ${log}. Run handoff relay setup again to retry.`)
