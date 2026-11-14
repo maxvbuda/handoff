@@ -670,8 +670,9 @@ async function healthy(url) {
   try { return (await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(10_000) })).ok } catch { return false }
 }
 
-// A login item that runs `args` and runs it again whenever it stops; output goes to `logFile`.
-function startAgent(label, args, logFile) {
+// A login item that runs `args` and runs it again whenever it stops (at most every `every` seconds);
+// output goes to `logFile`.
+function startAgent(label, args, logFile, every = 10) {
   const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
   fs.mkdirSync(path.dirname(plistFor(label)), { recursive: true })
   fs.writeFileSync(plistFor(label), `<?xml version="1.0" encoding="UTF-8"?>
@@ -682,7 +683,7 @@ function startAgent(label, args, logFile) {
   <key>EnvironmentVariables</key><dict><key>CLAUDE_WATCH_NOTES_DIR</key><string>${esc(DIR)}</string><key>HOME</key><string>${esc(os.homedir())}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ThrottleInterval</key><integer>${every}</integer>
   <key>StandardOutPath</key><string>${esc(logFile)}</string>
   <key>StandardErrorPath</key><string>${esc(logFile)}</string>
 </dict></plist>
@@ -761,7 +762,8 @@ async function relay(sub) {
   startAgent(AGENTS.relay, [process.execPath, fileURLToPath(import.meta.url), 'relay'], path.join(RELAY_DIR, 'relay.log'))
   const log = path.join(RELAY_DIR, 'zrok.log')
   fs.writeFileSync(log, '')
-  startAgent(AGENTS.share, [z, 'share', 'public', `http://127.0.0.1:${RELAY_PORT}`, '--name-selection', `public:${name}`, '--headless'], log)
+  // A minute between tries: zrok answers quick retries with 429 ("the zrok service is busy") and keeps refusing.
+  startAgent(AGENTS.share, [z, 'share', 'public', `http://127.0.0.1:${RELAY_PORT}`, '--name-selection', `public:${name}`, '--headless'], log, 60)
   console.log('Started your relay on this Mac (it starts again at login). Putting it on the internet with zrok…')
 
   // zrok prints the share's address once it's up ("access your zrok share at … handoff-….shares.zrok.io").
