@@ -716,6 +716,7 @@ final class Store {
 
     func deleteShot(_ shot: Shot) {
         shots.removeAll { $0.id == shot.id }
+        if let video = images[shot.id]?.video { try? FileManager.default.removeItem(at: video) }
         images[shot.id] = nil
         try? FileManager.default.removeItem(at: Self.shotFile(shot.id))
     }
@@ -1301,7 +1302,12 @@ struct ShotView: View {
                 }
                 .disabled(shipped)
             }
-            Button("Delete", role: .destructive) { store.deleteShot(current); dismiss() }
+            // Back first, then delete: the screen this came from may be showing this very shot, and
+            // pulling it out while this one is still on top of it is how Delete froze.
+            Button("Delete", role: .destructive) {
+                dismiss()
+                Task { try? await Task.sleep(for: .milliseconds(400)); store.deleteShot(current) }
+            }
             if !current.saved {
                 Text("Save it to keep it after newer screenshots come in.").font(.caption2).foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
@@ -1395,7 +1401,7 @@ struct ClipView: View {
     var body: some View {
         VideoPlayer(player: player)
             .aspectRatio(aspect, contentMode: .fit)
-            .disabled(true)
+            .allowsHitTesting(false) // taps open or zoom it, like a picture
             .task(id: url) {
                 let asset = AVURLAsset(url: url)
                 if let track = try? await asset.loadTracks(withMediaType: .video).first,

@@ -37,6 +37,25 @@ const history = [
 ].map(n => ({ id: crypto.randomUUID().toUpperCase(), text: n.text, ts: ago(n.mins), to: n.to, sent: true }))
 const plistData = buf => `<${buf.toString('hex')}>`
 
+// The picture Claude "sends" in screenshot 4: a small web page, drawn by headless Chrome.
+const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const SAMPLE = (() => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-sample-'))
+  fs.writeFileSync(path.join(d, 'page.html'), `<!doctype html><meta charset="utf-8"><style>
+    body{margin:0;font:600 34px -apple-system,sans-serif;background:#0f172a;color:#f1f5f9}
+    header{display:flex;justify-content:space-between;align-items:center;padding:28px 36px;background:#1e293b}
+    .t{width:96px;height:52px;border-radius:26px;background:#f59e0b;position:relative}
+    .t:after{content:'';position:absolute;right:6px;top:6px;width:40px;height:40px;border-radius:20px;background:#fff}
+    main{padding:40px 36px} h1{font-size:64px;margin:0 0 18px} p{color:#94a3b8;font-weight:400;margin:0 0 30px}
+    a{display:inline-block;padding:20px 36px;border-radius:16px;background:#f59e0b;color:#111;text-decoration:none}
+  </style><header>My Website <span class="t"></span></header>
+  <main><h1>Dark mode is here</h1><p>Tap the switch at the top to change it.</p><a>Get started</a></main>`)
+  execFileSync(CHROME, ['--headless', '--disable-gpu', '--hide-scrollbars', '--window-size=800,600',
+    `--screenshot=${path.join(d, 'page.png')}`, `file://${path.join(d, 'page.html')}`], { stdio: 'ignore' })
+  execFileSync('sips', ['-Z', '480', '-s', 'format', 'jpeg', '-s', 'formatOptions', '80', path.join(d, 'page.png'), '--out', path.join(d, 'page.jpg')], { stdio: 'ignore' })
+  return fs.readFileSync(path.join(d, 'page.jpg'))
+})()
+
 const mock = await startMock({ port: 8798 })
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-shots-'))
 const env = { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_NO_SIM: '1' }
@@ -58,7 +77,8 @@ try {
       sim('boot', udid)
       sim('bootstatus', udid, '-b')
       sim('install', udid, app)
-      const launch = (...args) => { try { sim('terminate', udid, BUNDLE) } catch {} sim('launch', udid, BUNDLE, '-relay', mock.url, ...args) }
+      // -quiet: no haptics, which the simulator plays as sounds.
+      const launch = (...args) => { try { sim('terminate', udid, BUNDLE) } catch {} sim('launch', udid, BUNDLE, '-relay', mock.url, '-quiet', 'YES', ...args) }
       const shot = async (name, wait = 4000) => {
         await sleep(wait)
         const file = path.join(OUT, `${type.replace(/[^\w]+/g, '-').replace(/-+$/, '')}-${name}.png`)
@@ -98,6 +118,16 @@ try {
       launch('-target', 'website', '-suggestion', '<>', '-suggestionsOn', 'NO', '-notes', notes,
         '-draft', '("Add a contact form to the home page", "with name and email")')
       await shot('3-write', 7000)
+
+      // 4. What Claude built, sent back as a picture (a clip plays the same way).
+      await fetch(`${cfg.topicURL}-i`, { method: 'POST', body: seal({ i: SAMPLE.toString('base64'), note: 'x', chat: 'website', ts: new Date().toISOString() }, key) })
+      launch('-target', 'website', '-suggestion', '<>', '-suggestionsOn', 'NO', '-notes', notes, '-draft', '()')
+      await shot('4-screenshot', 9000)
+
+      // 5. Claude asks before it runs something; allow or deny on the wrist.
+      await fetch(`${cfg.topicURL}-p`, { method: 'POST', body: seal({ p: crypto.randomUUID(), tool: 'Bash', what: 'Run the test suite', input: 'npm test', chat: 'website', ts: new Date().toISOString() }, key) })
+      launch('-target', 'website', '-suggestion', '<>', '-suggestionsOn', 'NO', '-notes', notes, '-draft', '()')
+      await shot('5-approve', 7000)
 
       for (const k of kids.splice(0)) k.kill()
     } finally {
