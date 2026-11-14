@@ -262,8 +262,10 @@ final class Store {
     }
     /// Screenshots and GIFs from Claude, newest first: the last few, plus any you saved.
     private(set) var shots: [Shot] = [] { didSet { defaults.set(try? JSONEncoder().encode(shots), forKey: "shots") } }
-    /// Their pictures, loaded when first shown.
-    private var images: [String: Picture] = [:]
+    /// Their pictures, loaded when first shown. Not observed: image(_:) fills it while views draw,
+    /// and for a shot just deleted (its file gone) that write would redraw them again, forever: the
+    /// app froze on Delete. `shots` changing is what redraws them.
+    @ObservationIgnored private var images: [String: Picture] = [:]
     static let keepShots = 5 // unsaved
     /// The biggest screenshot download (sealed): a 4 MB GIF, as the Mac allows, plus base64 twice.
     static let maxDownload = 8_000_000
