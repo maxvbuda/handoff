@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased, with Hand-Off 1.4
+
+- **Video clips instead of GIFs:** when what Claude built moves, it sends a short MP4 (smooth, full color, 30 frames a second, a fraction of a GIF's size), which plays on the watch, silent and looping. Hand-Off 1.4 tells the Mac it can play them; to a watch on Hand-Off 1.3 or Wear OS, Claude still sends a GIF.
+
 ## 3.3.0 (2026-11-12), with Hand-Off 1.3
 
 - **GIFs that play:** when what Claude built moves, like a game, it records a video, turns it into a full-quality GIF with ffmpeg (480 px, 12 frames a second, all 256 colors) and sends that instead of a screenshot. It plays right on the watch. GIFs can be up to 4 MB; screenshots stay under 300 KB. `handoff done --image clip.gif` works too.

@@ -115,6 +115,7 @@ export async function saveNote(ev, key) {
   const at = typeof p.ts === 'string' && !isNaN(Date.parse(p.ts)) ? p.ts : new Date(ev.time * 1000).toISOString()
   const note = { id, text: String(p.t ?? '').slice(0, 20000), at, status: 'new' }
   if (typeof p.to === 'string' && p.to) note.to = p.to.slice(0, 40)
+  if (p.mp4) note.mp4 = true // the watch plays MP4 clips (Hand-Off 1.4 and later)
   fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
   // Created once: a retried or concurrently received copy of the same note fails here.
   try { fs.writeFileSync(noteFile(id), JSON.stringify(note, null, 2), { flag: 'wx' }); return { note, created: true } } catch {}

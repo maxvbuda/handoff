@@ -62,7 +62,7 @@ On the watch, tap **Jot an idea…** and add as many lines as you like. Swipe a 
 
 When Claude finishes a note it can suggest a next step, like Claude Code's prompt suggestions. The suggestion shows at the top of the watch app. Tap **Accept suggestion** to send it to Claude as a new note, or swipe it away. To turn suggestions off, go to **Settings → Suggestions**.
 
-When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it, or a short full-quality **GIF** made from a video when it moves (Claude records the video and turns it into a GIF with ffmpeg), which plays on the watch. It shows at the top of the app; tap it to see it full screen, and tap again to zoom in. The watch keeps the last 5; tap **Save** on one to keep it for good, and **Ship it** to have Claude commit, push and deploy that work.
+When a note changes something you can look at, like a web page, Claude can send a **screenshot** of it, or a short **video clip** when it moves (Claude records the video and makes it into an MP4 with ffmpeg), which plays on the watch. (Hand-Off 1.3 and the Wear OS app get a GIF instead.) It shows at the top of the app; tap it to see it full screen, and tap again to zoom in. The watch keeps the last 5; tap **Save** on one to keep it for good, and **Ship it** to have Claude commit, push and deploy that work.
 
 When Claude reaches a choice only you can make, it can **ask you** on the watch: tap one of the answers. Under **Projects**, **Stop** halts the note a chat is working on, and **Ship it** appears on chats with changes to commit. **Quick reply** has one-tap notes; add your own there. Each evening at 6 PM, the watch shows a **recap** of the notes each chat finished that day.
 

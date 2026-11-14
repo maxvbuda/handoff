@@ -106,7 +106,7 @@ The user is away from the computer and will not see or answer questions: treat e
 If an action is blocked or denied by the permission system, do not retry it or look for a way around it: skip that step, finish what you can, and list what was blocked in your summary for the user to do when they get home.
 Claude's response is never sent to the watch. Every note must end with a call to watch_note_done with its note_id and a short summary, including quick questions (put the answer in the summary) and notes you decide not to act on. Answering in the terminal alone is not enough: the user isn't there, and watch_note_done is how the result is saved for them and how the suggestion reaches the watch.
 You may also pass a suggestion: the one prompt the user would most likely send next, written as the user would type it (under 80 characters, e.g. "add tests for the new parser"). It appears on the watch with an Accept suggestion button that sends it back to you as a new note. Leave it out when there's no obvious next step.
-When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. To show something moving (a game, an animation), pass a short GIF instead, under 4 MB: record a video of it (an .mp4 or .mov, for example with Playwright's recordVideo or \`screencapture -v -V 5 FILE.mov\`), then turn it into a full-quality GIF with \`ffmpeg -y -t 6 -i VIDEO -vf "fps=12,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" CLIP.gif\`. Keep the quality: if it's over 4 MB, make the clip shorter (a smaller -t) rather than lowering the size, frame rate or colors. Leave it out when there's nothing to see.
+When the note changed something the user can look at (a web page, an app's screen), you may also pass image: the absolute path of a screenshot of it, which the user sees on their watch. Make it yourself, for example with headless Chrome (--headless --screenshot=FILE --window-size=1280,800 URL), then shrink it with \`sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg\`. It must be a PNG or JPEG under 300 KB. To show something moving (a game, an animation), pass a short MP4 clip instead, under 4 MB: record a video of it (for example with Playwright's recordVideo or \`screencapture -v -V 5 FILE.mov\`), then make the clip with \`ffmpeg -y -t 6 -i VIDEO -vf "fps=30,scale=480:-2" -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart CLIP.mp4\`. If watch_note_done says the watch can't play videos, send a GIF instead, as it says. Keep the quality: if it's over 4 MB, make the clip shorter (a smaller -t) rather than lowering the size or frame rate. Leave it out when there's nothing to see.
 If you hit a real choice only the user can make (which of two designs, whether to delete something), you may ask with watch_ask: a short question and 2 to 4 short answers, which they tap on their watch. It waits for the answer (5 minutes by default); if none comes, decide yourself and say so in your summary. Ask at most once or twice per note, and never about something you can reasonably decide.
 If a message says the user tapped Stop on their watch, stop working on the current note right away: don't start anything new, and call watch_note_done with what was done so far.
 Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
@@ -128,7 +128,7 @@ const TOOLS = [
         note_id: { type: 'string' },
         summary: { type: 'string' },
         suggestion: { type: 'string', description: 'Optional: the next prompt the user would most likely send, as they would type it (under 80 characters). Shown on the watch with an Accept suggestion button.' },
-        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or a short full-quality GIF of something moving (under 4 MB, made from a video with ffmpeg). Shown on the watch.' },
+        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or a short MP4 clip (or GIF) of something moving (under 4 MB, made from a video with ffmpeg). Shown on the watch.' },
       },
       required: ['note_id', 'summary'],
     },
@@ -173,25 +173,30 @@ const sendSuggestion = (text, noteId) => postBack('s', { s: text, note: noteId, 
 // Screenshots go on "<topic>-i". At this size the relay keeps each as an attachment (about 3 hours).
 const sendImage = (img, noteId) => postBack('i', { i: img.toString('base64'), note: noteId, chat: NAME, ts: new Date().toISOString() }, 60_000)
 
-// Claude makes the screenshot (this server runs nothing); we only check it's a small PNG, JPEG or
-// GIF. A GIF (a clip Claude turned from a video) may be much bigger, but sealed (base64 twice) it
-// must stay under the watch's 8 MB download limit (Store.maxDownload).
-const IMAGE_MAX = 300 * 1024, GIF_MAX = 4 * 1024 * 1024, NTFY_GIF_MAX = 1100 * 1024
-function readImage(p) {
+// Claude makes the screenshot (this server runs nothing); we only check it's a small PNG, JPEG, or a
+// clip: an MP4 (or .mov) or a GIF. A clip may be much bigger, but sealed (base64 twice) it must
+// stay under the watch's 8 MB download limit (Store.maxDownload).
+const IMAGE_MAX = 300 * 1024, CLIP_MAX = 4 * 1024 * 1024, NTFY_CLIP_MAX = 1100 * 1024
+const GIF_HOW = 'ffmpeg -y -t 6 -i VIDEO -vf "fps=12,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" CLIP.gif'
+function readImage(p, note) {
   const f = path.resolve(p)
   let st
   try { st = fs.statSync(f) } catch { throw new Error(`Can't read the image ${f}. Nothing was marked done; try again with a screenshot that exists, or without image.`) }
   if (!st.isFile()) throw new Error(`${f} isn't a file. Nothing was marked done.`)
-  if (st.size > GIF_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB (a GIF, under 4 MB). Nothing was marked done. For a GIF, make the clip shorter and try again.`)
+  if (st.size > CLIP_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB (a video or GIF, under 4 MB). Nothing was marked done. For a clip, make it shorter and try again.`)
   const b = fs.readFileSync(f)
   const png = b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   const jpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
   const gif = ['GIF87a', 'GIF89a'].includes(b.subarray(0, 6).toString('latin1'))
-  if (!png && !jpeg && !gif) throw new Error(`${f} isn't a PNG, JPEG or GIF. Nothing was marked done. To send a video, turn it into a GIF with ffmpeg first.`)
-  if (!gif && st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
-  // ntfy.sh refuses files over 2 MB, which a sealed GIF of more than about 1.1 MB is. Your own relay has no such limit.
-  if (gif && st.size > NTFY_GIF_MAX && readConfig()?.topicURL?.startsWith('https://ntfy.sh/'))
-    throw new Error(`The GIF is ${Math.round(st.size / 1024)} KB, and through ntfy.sh it must be under ${Math.round(NTFY_GIF_MAX / 1024)} KB. Nothing was marked done. Make the clip shorter (a smaller -t in ffmpeg; keep the quality) and try again. (With your own relay, \`handoff relay setup\`, GIFs can be up to 4 MB.)`)
+  const video = b.subarray(4, 8).toString('latin1') === 'ftyp' // MP4 or QuickTime
+  if (!png && !jpeg && !gif && !video) throw new Error(`${f} isn't a PNG, JPEG, GIF or MP4. Nothing was marked done.`)
+  // Hand-Off before 1.4 (and Wear OS) can't play videos; the watch says so in each note it sends.
+  if (video && !note.mp4) throw new Error(`This note came from a watch app that can't play videos. Nothing was marked done. Send a GIF instead: ${GIF_HOW}`)
+  const clip = gif || video
+  if (!clip && st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
+  // ntfy.sh refuses files over 2 MB, which a sealed clip of more than about 1.1 MB is. Your own relay has no such limit.
+  if (clip && st.size > NTFY_CLIP_MAX && readConfig()?.topicURL?.startsWith('https://ntfy.sh/'))
+    throw new Error(`The clip is ${Math.round(st.size / 1024)} KB, and through ntfy.sh it must be under ${Math.round(NTFY_CLIP_MAX / 1024)} KB. Nothing was marked done. Make it shorter (a smaller -t in ffmpeg; keep the quality) and try again. (With your own relay, \`handoff relay setup\`, clips can be up to 4 MB.)`)
   return b
 }
 
@@ -334,7 +339,7 @@ async function callTool(name, args = {}) {
     const f = noteFile(String(args.note_id || ''))
     let n
     try { n = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { throw new Error(`No watch note with id ${args.note_id}`) }
-    const image = typeof args.image === 'string' && args.image.trim() ? readImage(args.image.trim()) : null // before anything is saved
+    const image = typeof args.image === 'string' && args.image.trim() ? readImage(args.image.trim(), n) : null // before anything is saved
     Object.assign(n, { status: 'done', summary: args.summary, doneAt: new Date().toISOString(), chat: NAME })
     const suggestion = typeof args.suggestion === 'string' ? args.suggestion.trim().slice(0, 200) : ''
     if (suggestion) n.suggestion = suggestion

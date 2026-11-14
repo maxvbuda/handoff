@@ -1,5 +1,7 @@
 import CryptoKit
 import AppIntents
+import AVFoundation
+import AVKit
 import ImageIO
 import SwiftUI
 import WatchKit
@@ -213,7 +215,7 @@ struct ChatStatus: Equatable {
 /// (`working`, and `repo` messages with git status); permission prompts on "<topic>-p".
 private struct BackMessage: Decodable {
     var s: String?
-    var i: String? // screenshot, base64 PNG, JPEG or GIF
+    var i: String? // screenshot, base64 PNG, JPEG, GIF or MP4
     var recap: String? // the evening recap's day, with its lines (on "<topic>-s")
     var lines: [Recap.Line]?
     var q: String? // a question from Claude (on "<topic>-p"), with its answers
@@ -825,6 +827,7 @@ final class Store {
         do {
             var fields = ["id": note.id.uuidString, "t": note.text, "ts": note.ts.ISO8601Format()]
             fields["to"] = note.to
+            fields["mp4"] = "1" // we play MP4 clips, so Claude may send one instead of a GIF
             let payload = try JSONSerialization.data(withJSONObject: fields)
             return try await Ntfy.publish(payload, key: SymmetricKey(data: pairing.key), to: pairing.topicURL) != nil
         } catch {
@@ -1310,19 +1313,33 @@ struct ShotView: View {
 /// A permission prompt: what Claude wants to do, and Allow / Deny. Tap the text to read all of it.
 /// Or a question Claude asked: tap an answer.
 
-/// A screenshot, or a GIF clip Claude made from a video. A GIF's frames are decoded as they're
-/// shown, not all at once: a few seconds of full-size clip would otherwise fill the watch's memory.
-/// (UIImage(data:) keeps only a GIF's first frame.)
+/// A screenshot, or a clip Claude made from a video: an MP4, or a GIF. A GIF's frames are decoded
+/// as they're shown, not all at once: a few seconds of full-size clip would otherwise fill the
+/// watch's memory. (UIImage(data:) keeps only a GIF's first frame.)
 final class Picture {
-    let still: UIImage // the first frame
-    private let source: CGImageSource
+    let still: UIImage // the first frame (an MP4's is drawn by its player)
+    let video: URL? // an MP4's file, which AVPlayer plays
+    private let source: CGImageSource?
     private let ends: [Double] // when each frame ends, from the start
     private var shown: (index: Int, image: UIImage)
 
     init?(_ data: Data) {
+        if data.dropFirst(4).prefix(4).elementsEqual("ftyp".utf8) {
+            // AVPlayer plays files, named so it knows what they are: one per clip, by its contents.
+            let name = SHA256.hash(data: data).prefix(12).map { String(format: "%02x", $0) }.joined()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).mp4")
+            guard FileManager.default.fileExists(atPath: url.path) || (try? data.write(to: url)) != nil else { return nil }
+            video = url
+            source = nil
+            still = UIImage()
+            shown = (0, still)
+            ends = [0]
+            return
+        }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0,
               let first = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
         self.source = source
+        video = nil
         still = UIImage(cgImage: first)
         shown = (0, still)
         var t = 0.0
@@ -1341,7 +1358,7 @@ final class Picture {
 
     /// The frame showing `t` seconds into the loop.
     func frame(at t: TimeInterval) -> UIImage {
-        guard animated, let total = ends.last else { return still }
+        guard animated, let source, let total = ends.last else { return still }
         let at = t.truncatingRemainder(dividingBy: total)
         let i = ends.firstIndex { at < $0 } ?? 0
         if i != shown.index, let cg = CGImageSourceCreateImageAtIndex(source, i, nil) { shown = (i, UIImage(cgImage: cg)) }
@@ -1349,18 +1366,51 @@ final class Picture {
     }
 }
 
-/// Shows a picture, playing it if it's a GIF clip.
+/// Shows a picture, playing it if it's a clip. An MP4 plays on its own, silent and looping, like a GIF.
 struct PictureView: View {
     let picture: Picture
 
     var body: some View {
-        if picture.animated {
+        if let video = picture.video {
+            ClipView(url: video)
+        } else if picture.animated {
             TimelineView(.animation(minimumInterval: picture.step)) { t in
                 Image(uiImage: picture.frame(at: t.date.timeIntervalSinceReferenceDate)).resizable().scaledToFit()
             }
         } else {
             Image(uiImage: picture.still).resizable().scaledToFit()
         }
+    }
+}
+
+/// An MP4 clip, playing in a loop with no sound or controls while it's on screen. (watchOS has no
+/// AVPlayerLooper: it starts over when it reaches the end.)
+struct ClipView: View {
+    let url: URL
+    @State private var player: AVPlayer?
+    @State private var aspect: CGFloat = 1 // width / height, once the video's size is known
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .aspectRatio(aspect, contentMode: .fit)
+            .disabled(true)
+            .task(id: url) {
+                let asset = AVURLAsset(url: url)
+                if let track = try? await asset.loadTracks(withMediaType: .video).first,
+                   let (size, turn) = try? await track.load(.naturalSize, .preferredTransform) {
+                    let shown = size.applying(turn)
+                    if shown.height != 0 { aspect = abs(shown.width / shown.height) }
+                }
+                let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                player.isMuted = true
+                self.player = player
+                player.play()
+                for await _ in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification, object: player.currentItem) {
+                    await player.seek(to: .zero)
+                    player.play()
+                }
+            }
+            .onDisappear { player?.pause(); player = nil }
     }
 }
 

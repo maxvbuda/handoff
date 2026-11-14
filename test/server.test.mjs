@@ -280,14 +280,27 @@ describe('delivery', () => {
     assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(gif))
   })
 
+  test('watch_note_done sends an MP4 clip when the note came from a watch that plays them', async () => {
+    const n = { ...note('mp4'), mp4: '1' }
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const mp4 = Buffer.concat([Buffer.from('\0\0\0\x20ftypisom'), crypto.randomBytes(2_000_000)])
+    const file = path.join(dir, 'clip.mp4')
+    fs.writeFileSync(file, mp4)
+    const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
+    assert.match(r.result.content[0].text, /Screenshot sent/)
+    const ev = (await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').map(l => JSON.parse(l)).pop()
+    assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(mp4))
+  })
+
   test('watch_note_done refuses a screenshot that is too big or not an image, and leaves the note open', async () => {
     const n = note('bad image')
     await post(cfg.topicURL, seal(n, cfg.key))
     await s.waitFor(pushFor(n.id))
     for (const [name, bytes, why] of [['big.png', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(400_000)]), /under 300 KB/],
       ['big.gif', Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(4_300_000)]), /under 4 MB/],
-      ['clip.mp4', Buffer.from('\0\0\0\x20ftypisom'), /isn't a PNG, JPEG or GIF/],
-      ['notes.txt', Buffer.from('hello'), /isn't a PNG, JPEG or GIF/], ['missing.jpg', null, /Can't read/]]) {
+      ['clip.mp4', Buffer.from('\0\0\0\x20ftypisom'), /can't play videos[\s\S]*\.gif/], // the note isn't from a watch that plays them
+      ['notes.txt', Buffer.from('hello'), /isn't a PNG, JPEG, GIF or MP4/], ['missing.jpg', null, /Can't read/]]) {
       const file = path.join(dir, name)
       if (bytes) fs.writeFileSync(file, bytes)
       const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
