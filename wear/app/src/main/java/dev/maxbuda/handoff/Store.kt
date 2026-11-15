@@ -307,6 +307,7 @@ object Store {
     private suspend fun post(note: Note, p: Pairing): Boolean {
         val fields = JSONObject().put("id", note.id).put("t", note.text).put("ts", iso(note.ts))
         note.to?.let { fields.put("to", it) }
+        fields.put("mp4", "1") // we play MP4 clips, so Claude may send one instead of a GIF
         return Relay.publish(fields, p.key, p.topicURL) != null
     }
 
@@ -517,7 +518,7 @@ object Store {
                 body = runCatching { JSONObject(String(Crypto.open(sealed, p.key))) }.getOrNull()
             }
             val bytes = body?.optStringOrNull("i")?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() } ?: continue
-            if (!Picture.isImage(bytes)) continue
+            if (!Picture.isImage(bytes) && !Picture.isVideo(bytes)) continue
             val shot = Shot(ev.id, body.optStringOrNull("chat"))
             if (runCatching { kotlinx.coroutines.withContext(Dispatchers.IO) { shotFile(shot.id).writeBytes(bytes) } }.isSuccess) got += shot
         }
