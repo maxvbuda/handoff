@@ -1006,12 +1006,17 @@ struct PairView: View {
             Text("On your Mac, run handoff pair and type this code:")
                 .font(.footnote).foregroundStyle(.secondary)
                 .listRowBackground(Color.clear)
-            Text("\(code.prefix(4))-\(code.suffix(4))")
-                .font(.system(.title3, design: .monospaced)).bold()
-                .lineLimit(1).minimumScaleFactor(0.5)
-                .foregroundStyle(failure == nil ? .primary : .secondary)
-                .accessibilityIdentifier("pairCode")
-                .listRowBackground(Color.clear)
+            HStack(spacing: 6) {
+                CodeHalf(text: String(code.prefix(4)))
+                Text("–").foregroundStyle(.secondary)
+                CodeHalf(text: String(code.suffix(4)))
+            }
+            .frame(maxWidth: .infinity)
+            .opacity(failure == nil ? 1 : 0.4)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(code.prefix(4))-\(code.suffix(4))")
+            .accessibilityIdentifier("pairCode")
+            .listRowBackground(Color.clear)
             if let failure {
                 Text(failure).font(.footnote).foregroundStyle(.red)
                 Button("New code") { code = Pairer.newCode(); self.failure = nil }
@@ -1068,6 +1073,17 @@ struct EditorView: View {
     var body: some View {
         @Bindable var store = store
         List {
+            // Your chats at a glance (open, and how many are working), a short row under the title; tap for Projects.
+            if !store.chats.isEmpty {
+                NavigationLink { ProjectsView() } label: {
+                    ChatsLine(open: store.chats.count, working: store.status.values.count(where: { $0.working != nil }), accent: accent)
+                }
+                .accessibilityLabel("Projects")
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+                .environment(\.defaultMinListRowHeight, 18)
+            }
+
             ForEach(store.approvals) { a in ApprovalSection(approval: a) }
 
             if let shot = store.shots.first, let image = store.image(shot) {
@@ -1102,12 +1118,16 @@ struct EditorView: View {
 
             if let s = store.suggestion {
                 Section(s.chat.map { String(localized: "Suggestion · \($0)") } ?? String(localized: "Suggestion")) {
-                    Text(s.text).font(.footnote)
-                        .swipeActions { Button("Dismiss", role: .destructive) { store.suggestion = nil } }
-                    Button(action: store.acceptSuggestion) {
-                        Label("Accept suggestion", systemImage: "arrow.turn.down.left")
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "sparkles").foregroundStyle(accent).font(.caption)
+                        Text(s.text).font(.footnote)
                     }
-                    .foregroundStyle(accent)
+                    .swipeActions { Button("Dismiss", role: .destructive) { store.suggestion = nil } }
+                    Button(action: store.acceptSuggestion) {
+                        Label("Accept suggestion", systemImage: "arrow.turn.down.left").font(.footnote.weight(.bold))
+                            .foregroundStyle(theme.onColor)
+                    }
+                    .listRowBackground(RoundedRectangle(cornerRadius: 14).fill(accent))
                 }
             }
 
@@ -1138,12 +1158,20 @@ struct EditorView: View {
             }
             Section {
                 ForEach(Array(store.draft.enumerated()), id: \.offset) { _, text in
-                    Text(text).font(.footnote)
+                    HStack(spacing: 7) {
+                        RoundedRectangle(cornerRadius: 1.5).fill(accent).frame(width: 3)
+                        Text(text).font(.footnote)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 .onDelete { store.draft.remove(atOffsets: $0) }
 
-                TextField(store.draft.isEmpty ? String(localized: "Jot an idea…") : String(localized: "Add a line…"), text: $line)
-                    .onSubmit(commitLine)
+                HStack(spacing: 7) {
+                    Image(systemName: store.draft.isEmpty ? "mic.fill" : "plus").font(.footnote).foregroundStyle(accent)
+                        .accessibilityHidden(true)
+                    TextField(store.draft.isEmpty ? String(localized: "Jot an idea…") : String(localized: "Add a line…"), text: $line)
+                        .onSubmit(commitLine)
+                }
             }
 
             // The usual follow-ups, two taps away; only while nothing is being written.
@@ -1160,12 +1188,16 @@ struct EditorView: View {
                 Section("Handed off") {
                     ForEach(store.notes) { note in
                         HStack(alignment: .top) {
-                            VStack(alignment: .leading) {
-                                Text(note.text).font(.caption2).lineLimit(2).foregroundStyle(.secondary)
-                                if let to = note.to { Text("→ \(to)").font(.caption2).foregroundStyle(accent) }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(note.text).font(.caption2).lineLimit(2)
+                                HStack(spacing: 4) {
+                                    if let to = note.to { Text("→ \(to)").foregroundStyle(accent).lineLimit(1) }
+                                    Text(note.ts.formatted(.relative(presentation: .numeric, unitsStyle: .narrow))).foregroundStyle(.secondary)
+                                }
+                                .font(.caption2)
                             }
                             Spacer(minLength: 4)
-                            Image(systemName: note.sent ? "checkmark" : "clock")
+                            Image(systemName: note.sent ? "checkmark.circle.fill" : "clock")
                                 .font(.caption2).foregroundStyle(note.sent ? accent : .secondary)
                                 .accessibilityLabel(note.sent ? String(localized: "Delivered") : String(localized: "Waiting to send"))
                         }
@@ -1173,9 +1205,6 @@ struct EditorView: View {
                 }
             }
 
-            if !store.chats.isEmpty {
-                NavigationLink { ProjectsView() } label: { Label("Projects", systemImage: "folder") }
-            }
             NavigationLink { RecurringView() } label: {
                 Label(store.schedules.isEmpty ? String(localized: "Recurring") : String(localized: "Recurring (\(store.schedules.count))"), systemImage: "repeat")
             }
@@ -1220,6 +1249,44 @@ struct EditorView: View {
         let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty { store.draft.append(t) }
         line = ""
+    }
+}
+
+/// One half of the pairing code, in a box.
+struct CodeHalf: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(.title3, design: .monospaced)).bold()
+            .lineLimit(1).minimumScaleFactor(0.6)
+            .padding(.vertical, 6).padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.14)))
+    }
+}
+
+/// The top of Ideas: how many chats are open, and how many are working. Icons and numbers, no words.
+struct ChatsLine: View {
+    let open: Int
+    let working: Int
+    let accent: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(working > 0 ? accent : .green).frame(width: 7, height: 7)
+            Label("\(open)", systemImage: "bubble.left.and.bubble.right.fill")
+            if working > 0 { Label("\(working)", systemImage: "hammer.fill").foregroundStyle(accent) }
+        }
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .labelStyle(TightLabel())
+    }
+}
+
+/// An icon and its text, close together.
+struct TightLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) { configuration.icon; configuration.title }
     }
 }
 
@@ -1530,17 +1597,21 @@ struct ProjectsView: View {
         List {
             ForEach(store.chats, id: \.self) { name in
                 let s = store.status[name] ?? ChatStatus()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.headline)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Circle().fill(s.working != nil ? accent : .green).frame(width: 7, height: 7)
+                        Text(name).font(.headline).lineLimit(1)
+                    }
                     if let w = s.working {
-                        Label(w, systemImage: "hammer").font(.caption2).foregroundStyle(accent).lineLimit(2)
+                        Label(w, systemImage: "hammer.fill").font(.caption2).foregroundStyle(accent).lineLimit(2)
                     } else {
                         Text("Idle").font(.caption2).foregroundStyle(.secondary)
                     }
                     if let branch = s.branch {
-                        Text([branch, s.changes > 0 ? "\(s.changes) changed" : "clean",
-                              s.ahead > 0 ? "\(s.ahead) to push" : nil].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption2).foregroundStyle(.secondary)
+                        Label([branch, s.changes > 0 ? "\(s.changes) changed" : "clean",
+                               s.ahead > 0 ? "\(s.ahead) to push" : nil].compactMap { $0 }.joined(separator: " · "),
+                              systemImage: "arrow.triangle.branch")
+                            .font(.caption2).foregroundStyle(.secondary).labelStyle(TightLabel())
                     }
                 }
                 if s.working != nil {
