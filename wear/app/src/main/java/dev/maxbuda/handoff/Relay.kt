@@ -99,6 +99,12 @@ object Relay {
         }
     }
 
+    /** Any request; its body if it succeeded within `waitFor` seconds, else null. */
+    suspend fun call(req: Request, waitFor: Long = 30): String? {
+        val client = http.newBuilder().readTimeout(waitFor, TimeUnit.SECONDS).callTimeout(waitFor, TimeUnit.SECONDS).build()
+        return run(client.newCall(req)) { call -> call.execute().use { res -> if (res.isSuccessful) res.body.string() else null } }
+    }
+
     /**
      * Runs a blocking call off the main thread, returning null if it fails. OkHttp's blocking reads
      * don't notice coroutine cancellation, so cancelling cancels the call itself.

@@ -26,6 +26,22 @@ class CryptoTest {
         assertEquals("hello", String(Crypto.open(sealed, key)))
     }
 
+    /** Pair nearby: X25519 from Java's XDH, then the same key and number as `handoff pair --nearby` (vectors from Node). */
+    @Test fun nearbyMatchesNode() {
+        val dec = java.util.Base64.getDecoder()
+        val kf = java.security.KeyFactory.getInstance("XDH")
+        val watch = kf.generatePrivate(java.security.spec.PKCS8EncodedKeySpec(dec.decode("MC4CAQAwBQYDK2VuBCIEIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB")))
+        val macPub = dec.decode("MCowBQYDK2VuAyEAzo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=")
+        val shared = javax.crypto.KeyAgreement.getInstance("XDH").run {
+            init(watch); doPhase(kf.generatePublic(java.security.spec.X509EncodedKeySpec(macPub)), true); generateSecret()
+        }
+        // The watch's public key (Node's 'spki' DER for the same private key): what goes into the number.
+        val watchPub = dec.decode("MCowBQYDK2VuAyEApOCSkrZRwni5dyxWn1+puxPZBrRqtoyd+dwrRAn4ogk=")
+        val (key, sas) = Nearby.derive(shared, watchPub, macPub)
+        assertEquals("9d30c325ddd705bd4798c32c02820473b36347cccd9dc7f0b27f2852a8a1985e", key.hex())
+        assertEquals("289179", sas)
+    }
+
     @Test fun codesUseTheAlphabet() {
         repeat(100) { val c = Pairer.newCode(); assertEquals(8, c.length); assertTrue(c.all { it in Pairer.ALPHABET }) }
         assertEquals("K7QXM2PA", Pairer.normalize("k7qx-m2pa"))

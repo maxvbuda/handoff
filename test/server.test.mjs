@@ -1267,3 +1267,43 @@ describe('your own relay (handoff relay)', () => {
     } finally { await s.stop(); await r.close() }
   })
 })
+
+describe('pair --nearby (experimental: no code, on the same network)', () => {
+  // A pretend watch: X25519 with the Mac, the 6-digit number, then the sealed offer.
+  async function watch(port, answer) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-nearby-'))
+    const mac = spawn(process.execPath, [SERVER, 'pair', '--nearby'], {
+      env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_NO_BONJOUR: '1', CLAUDE_WATCH_NOTES_NEARBY_PORT: String(port) },
+    })
+    let out = ''
+    mac.stdout.on('data', d => { out += d; if (/Does it show/.test(String(d))) mac.stdin.write(answer + '\n') })
+    for (let i = 0; i < 50 && !out.includes('Pairing nearby'); i++) await new Promise(r => setTimeout(r, 100))
+    const me = crypto.generateKeyPairSync('x25519')
+    const myPub = me.publicKey.export({ type: 'spki', format: 'der' })
+    const hello = await (await fetch(`http://127.0.0.1:${port}/hello`, { method: 'POST', body: JSON.stringify({ pub: myPub.toString('base64') }) })).json()
+    const macPub = Buffer.from(hello.pub, 'base64')
+    const shared = crypto.diffieHellman({ privateKey: me.privateKey, publicKey: crypto.createPublicKey({ key: macPub, format: 'der', type: 'spki' }) })
+    const derive = (info, n) => Buffer.from(crypto.hkdfSync('sha256', shared, 'handoff-nearby', info, n))
+    const sas = String(derive(Buffer.concat([Buffer.from('sas'), myPub, macPub]), 4).readUInt32BE() % 1_000_000).padStart(6, '0')
+    const key = derive('key', 32)
+    const n = crypto.randomBytes(16).toString('hex')
+    const topic = `https://ntfy.sh/cw-${crypto.randomBytes(16).toString('hex')}`
+    const res = await fetch(`http://127.0.0.1:${port}/offer`, { method: 'POST', body: seal({ topic, key: crypto.randomBytes(32).toString('base64'), n, moves: true }, key) })
+    const ack = res.ok ? openBox(await res.text(), key) : null
+    mac.kill()
+    return { out, sas, ack, n, topic, config: (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) } catch { return null } })() }
+  }
+
+  test('pairs once you confirm the number the watch shows', async () => {
+    const r = await watch(8781, 'y')
+    assert.match(r.out, new RegExp(`Does it show  ${r.sas.slice(0, 3)} ${r.sas.slice(3)} \\?`)) // the same number on both
+    assert.equal(r.ack.ack, r.n)
+    assert.equal(r.config.topicURL, r.topic)
+  })
+
+  test("doesn't pair when you say the number doesn't match", async () => {
+    const r = await watch(8782, 'n')
+    assert.equal(r.ack, null)
+    assert.equal(r.config, null)
+  })
+})

@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -269,6 +270,8 @@ fun PairScreen() {
             }
         }
     }
+    var nearby by rememberSaveable { mutableStateOf(false) }
+    if (nearby) { NearbyScreen { nearby = false }; return }
     ListScreen(stringResource(R.string.pair)) {
         item { Caption(stringResource(R.string.pair_instructions)) }
         item {
@@ -289,6 +292,55 @@ fun PairScreen() {
                 }
             }
         }
+        // Experimental, debug builds only (it needs plain http to the Mac): no code to type.
+        if (BuildConfig.DEBUG) item { Item("Find my Mac", Icons.Default.Computer, secondary = "Same Wi-Fi: handoff pair --nearby") { nearby = true } }
+    }
+}
+
+/** Experimental: the Macs running `handoff pair --nearby` on this network; pick one, then compare the number. */
+@Composable
+fun NearbyScreen(back: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val macs by remember { Nearby.macs(context) }.collectAsState(initial = null)
+    var session by remember { mutableStateOf<Nearby.Session?>(null) }
+    var status by remember { mutableStateOf<String?>(null) }
+    val s = session
+    if (s != null) {
+        ListScreen("Pair with ${s.mac.name}") {
+            item { Caption("Check that your Mac shows the same number, then type y there.") }
+            item {
+                Text("${s.sas.take(3)} ${s.sas.takeLast(3)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 30.sp,
+                    textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
+            }
+            item {
+                if (status == null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
+                    Text("Waiting for your Mac…", style = MaterialTheme.typography.bodySmall)
+                } else Caption(status!!, Color(0xFFFF6B6B))
+            }
+            if (status != null) item { Item("Back", tonal = false) { session = null; status = null } }
+        }
+        LaunchedEffect(s) {
+            val p = Nearby.offer(s)
+            if (p != null) { Haptic.success(context); Store.updatePairing(p) } else status = "Not paired. The Mac said no, or didn't answer."
+        }
+        return
+    }
+    ListScreen("Find my Mac") {
+        val list = macs
+        when {
+            list == null || list.isEmpty() -> {
+                item { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Looking…", style = MaterialTheme.typography.bodySmall) } }
+                item { Caption("On your Mac, on the same Wi-Fi, run: handoff pair --nearby") }
+            }
+            else -> items(list) { mac ->
+                Item(mac.name, Icons.Default.Computer, secondary = status) {
+                    scope.launch { status = null; session = Nearby.hello(mac) ?: run { status = "Couldn't reach it"; null } }
+                }
+            }
+        }
+        item { Item("Use a code instead", Icons.Default.Close, onClick = back) }
     }
 }
 

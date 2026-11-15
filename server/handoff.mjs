@@ -25,6 +25,79 @@ const CURSOR = path.join(DIR, 'cursor')
 // The watch shows the code and the user types it here; Hand-Off 1.0 works the other way around
 // (we show a code to type on the watch). Either way the watch's offer is cached on the relay,
 // so it doesn't matter which side starts first.
+// ---------- pair nearby (experimental) ----------
+// No code to type: the Mac announces itself on the local network (Bonjour, _handoff._tcp) and a
+// watch on the same Wi-Fi finds it. They agree on a key with X25519 over plain HTTP, and both show a
+// 6-digit number from it; you check they match on the Mac, which is what stops someone else on the
+// network from pairing in the middle. Then the watch sends the same offer it would send through the
+// relay, sealed with that key, and gets the same ack. Nothing goes through ntfy.sh.
+if (process.argv[2] === 'pair' && process.argv[3] === '--nearby') {
+  const http = await import('node:http')
+  const { execFileSync, spawn } = await import('node:child_process')
+  const readline = await import('node:readline/promises')
+  const mac = crypto.generateKeyPairSync('x25519')
+  const macPub = mac.publicKey.export({ type: 'spki', format: 'der' })
+  let session // { key, sas } once a watch said hello
+  let busy = false
+  const name = (() => { try { return execFileSync('scutil', ['--get', 'ComputerName'], { encoding: 'utf8' }).trim() } catch { return 'Mac' } })()
+  const body = req => new Promise((resolve, reject) => {
+    let d = ''
+    req.on('data', c => { d += c; if (d.length > 64 * 1024) { req.destroy(); reject(new Error('too big')) } })
+    req.on('end', () => resolve(d))
+  })
+  const reply = (res, code, obj) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(obj))
+  const ask = async question => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+    try { return /^y(es)?$/i.test((await rl.question(question)).trim()) } finally { rl.close() }
+  }
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      if (req.method === 'POST' && req.url === '/hello') {
+        // A watch's public key; ours back. A new hello replaces an unconfirmed one.
+        if (busy) return reply(res, 409, { error: 'busy' })
+        const watchPub = Buffer.from(JSON.parse(await body(req)).pub, 'base64')
+        const shared = crypto.diffieHellman({ privateKey: mac.privateKey, publicKey: crypto.createPublicKey({ key: watchPub, format: 'der', type: 'spki' }) })
+        const derive = (info, n) => Buffer.from(crypto.hkdfSync('sha256', shared, 'handoff-nearby', info, n))
+        const sas = String(derive(Buffer.concat([Buffer.from('sas'), watchPub, macPub]), 4).readUInt32BE() % 1_000_000).padStart(6, '0')
+        session = { key: derive('key', 32), sas }
+        return reply(res, 200, { pub: macPub.toString('base64'), name })
+      }
+      if (req.method === 'POST' && req.url === '/offer') {
+        if (!session || busy) return reply(res, 409, { error: 'say hello first' })
+        const { key, sas } = session
+        let p
+        try { p = open(await body(req), key) } catch { return reply(res, 400, { error: 'not sealed with our key' }) }
+        const topicOK = typeof p.topic === 'string' && p.topic.startsWith(`${RELAY}/cw-`) && /^[0-9a-f]{32}$/.test(p.topic.slice(RELAY.length + 4))
+        if (typeof p.n !== 'string' || Buffer.from(String(p.key), 'base64').length !== 32 || !topicOK) return reply(res, 400, { error: 'bad offer' })
+        busy = true
+        const ok = await ask(`\n  A watch wants to pair. Does it show  ${sas.slice(0, 3)} ${sas.slice(3)} ?  [y/N] `)
+        if (!ok) { busy = false; session = null; console.log('  Not paired. Waiting for another watch…'); return reply(res, 403, { error: 'refused' }) }
+        const own = p.moves === true ? await reachable(ownRelay()) : null
+        const topicURL = own ? `${own}${p.topic.slice(RELAY.length)}` : p.topic
+        fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
+        fs.writeFileSync(CONFIG, JSON.stringify({ topicURL, key: p.key }, null, 2), { mode: 0o600 })
+        res.writeHead(200, { 'content-type': 'text/plain' }).end(seal(own ? { ack: p.n, relay: own } : { ack: p.n }, key))
+        console.log(`  Paired${own ? `, through your own relay (${own})` : ''}. Running Claude Code sessions pick this up automatically.\n\n  Next: handoff start\n`)
+        setTimeout(() => process.exit(0), 500)
+        return
+      }
+      reply(res, 404, { error: 'not found' })
+    } catch (e) {
+      if (!res.headersSent) reply(res, 400, { error: String(e.message) })
+    }
+  })
+  await new Promise(r => server.listen(Number(process.env.CLAUDE_WATCH_NOTES_NEARBY_PORT) || 0, '0.0.0.0', r))
+  const port = server.address().port
+  // macOS's own Bonjour tool; it keeps announcing until we exit.
+  const dnssd = process.env.CLAUDE_WATCH_NOTES_NO_BONJOUR ? null : spawn('dns-sd', ['-R', name, '_handoff._tcp', 'local', String(port), 'v=1'], { stdio: 'ignore' })
+  process.on('exit', () => dnssd?.kill())
+  console.log(`\n  Pairing nearby (experimental) as "${name}", port ${port}.\n\n` +
+    '  On the watch: open Hand-Off, tap "Find my Mac", and pick this Mac. Both will show a number.\n  Waiting up to 10 minutes…\n')
+  setTimeout(() => { console.error('  Timed out. Run handoff pair --nearby again.'); process.exit(1) }, Number(process.env.CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS) || 600_000)
+  await new Promise(() => {}) // the server runs until paired or timed out
+}
+
 if (process.argv[2] === 'pair') {
   const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // no 0/O, 1/I/L
   const typed = process.argv[3]

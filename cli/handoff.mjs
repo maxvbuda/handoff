@@ -73,6 +73,9 @@ if (cmd === 'start') {
   const report = async () => postChanged(`repo ${name}`, { repo: name, ...(await gitStatus(process.cwd())) })
   report()
   setInterval(report, Number(process.env.CLAUDE_WATCH_NOTES_CHECK_MS) || 60_000).unref()
+} else if (cmd === 'pair' && rest[0] === '--nearby') {
+  // Experimental: no code; the watch finds this Mac on the local network.
+  run(process.execPath, [SERVER, 'pair', '--nearby'], { stdio: 'inherit' })
 } else if (cmd === 'pair') {
   // The watch shows a code to type here. With no code (pressing Return, or not at a terminal, like
   // the 1.0 /handoff:pair skill), show one to type on the watch instead, as Hand-Off 1.0 asks.
