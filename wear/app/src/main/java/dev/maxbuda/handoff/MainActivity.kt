@@ -11,7 +11,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -275,9 +284,12 @@ fun PairScreen() {
     ListScreen(stringResource(R.string.pair)) {
         item { Caption(stringResource(R.string.pair_instructions)) }
         item {
-            Text("${code.take(4)}-${code.takeLast(4)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
-                fontSize = 22.sp, maxLines = 1, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                color = if (failure == null) Color.White else Color.Gray)
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                val dim = if (failure == null) 1f else 0.4f
+                CodeHalf(code.take(4), dim)
+                Text("–", color = Color.Gray, modifier = Modifier.padding(horizontal = 6.dp))
+                CodeHalf(code.takeLast(4), dim)
+            }
         }
         val f = failure
         if (f != null) {
@@ -410,6 +422,11 @@ fun IdeasScreen(nav: NavHostController, jot: Boolean, jotHandled: () -> Unit) {
             }
         } else null,
     ) {
+        // Your chats at a glance (open, and how many are working); tap for Projects.
+        if (Store.chats.isNotEmpty()) item {
+            ChatsLine(Store.chats.size, Store.status.values.count { it.working != null }) { nav.navigate("projects") }
+        }
+
         Store.approvals.forEach { approvalItems(it, nav) }
 
         Store.shots.firstOrNull()?.let { shot ->
@@ -432,7 +449,14 @@ fun IdeasScreen(nav: NavHostController, jot: Boolean, jotHandled: () -> Unit) {
 
         Store.suggestion?.let { s ->
             item { ListHeader { Text(s.chat?.let { stringResource(R.string.suggestion_from, it) } ?: stringResource(R.string.suggestion)) } }
-            item { Caption(s.text, Color.White) }
+            item {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(10.dp),
+                    verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Default.AutoAwesome, null, tint = accent, modifier = Modifier.size(14.dp).padding(top = 2.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(s.text, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
             item { Item(stringResource(R.string.accept_suggestion), Icons.Default.KeyboardReturn, tonal = false, onClick = Store::acceptSuggestion) }
             item { Item(stringResource(R.string.dismiss), Icons.Default.Close, onClick = Store::dismissSuggestion) }
         }
@@ -457,12 +481,17 @@ fun IdeasScreen(nav: NavHostController, jot: Boolean, jotHandled: () -> Unit) {
         }
 
         itemsIndexed(Store.draft) { i, line ->
-            Button(onClick = { Store.removeLine(i) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.filledTonalButtonColors(),
-                label = { Text(line, style = MaterialTheme.typography.bodySmall) },
-                icon = { Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp)) })
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainer).clickable { Store.removeLine(i) }.padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(accent))
+                Spacer(Modifier.width(8.dp))
+                Text(line, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                Icon(Icons.Default.Close, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(14.dp))
+            }
         }
         item {
-            if (Store.draft.isEmpty()) Item(stringResource(R.string.jot_an_idea), Icons.Default.Edit, tonal = false, onClick = input)
+            if (Store.draft.isEmpty()) Item(stringResource(R.string.jot_an_idea), Icons.Default.Mic, tonal = false, onClick = input)
             else Item(stringResource(R.string.add_a_line), Icons.Default.Add, onClick = addLine)
         }
 
@@ -477,23 +506,53 @@ fun IdeasScreen(nav: NavHostController, jot: Boolean, jotHandled: () -> Unit) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.Top) {
                     Column(Modifier.weight(1f)) {
-                        Text(note.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        note.to?.let { Text(stringResource(R.string.to_chat, it), style = MaterialTheme.typography.bodySmall, color = accent) }
+                        Text(note.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Row {
+                            note.to?.let { Text(stringResource(R.string.to_chat, it) + "  ", style = MaterialTheme.typography.bodySmall, color = accent, maxLines = 1) }
+                            Text(android.text.format.DateUtils.getRelativeTimeSpanString(note.ts, System.currentTimeMillis(),
+                                android.text.format.DateUtils.MINUTE_IN_MILLIS, android.text.format.DateUtils.FORMAT_ABBREV_RELATIVE).toString(),
+                                style = MaterialTheme.typography.bodySmall, color = Color.Gray, maxLines = 1)
+                        }
                     }
-                    Icon(if (note.sent) Icons.Default.Check else Icons.Default.Schedule,
+                    Icon(if (note.sent) Icons.Default.CheckCircle else Icons.Default.Schedule,
                         contentDescription = stringResource(if (note.sent) R.string.delivered else R.string.waiting_to_send),
                         tint = if (note.sent) accent else Color.Gray, modifier = Modifier.size(14.dp))
                 }
             }
         }
 
-        if (Store.chats.isNotEmpty()) item { Item(stringResource(R.string.projects), Icons.Default.Folder) { nav.navigate("projects") } }
         item {
             val n = Store.schedules.size
             Item(if (n == 0) stringResource(R.string.recurring) else stringResource(R.string.recurring_count, n), Icons.Default.Repeat) { nav.navigate("recurring") }
         }
         item { Item(stringResource(R.string.settings), Icons.Default.Settings) { nav.navigate("settings") } }
+    }
+}
+
+/** One half of the pairing code, in a box. */
+@Composable
+private fun CodeHalf(text: String, alpha: Float) {
+    Text(text, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 22.sp, maxLines = 1,
+        color = Color.White.copy(alpha = alpha),
+        modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.14f * alpha)).padding(horizontal = 8.dp, vertical = 4.dp))
+}
+
+/** The top of Ideas: how many chats are open, and how many are working. Icons and numbers, no words. */
+@Composable
+private fun ChatsLine(open: Int, working: Int, onClick: () -> Unit) {
+    val accent = MaterialTheme.colorScheme.primary
+    val desc = stringResource(R.string.projects)
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(50)).clickable(onClickLabel = desc, onClick = onClick).padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(if (working > 0) accent else Color(0xFF34C759)))
+        Spacer(Modifier.width(8.dp))
+        Icon(Icons.Default.Forum, null, tint = Color.Gray, modifier = Modifier.size(14.dp))
+        Text(" $open", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        if (working > 0) {
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Default.Build, null, tint = accent, modifier = Modifier.size(12.dp))
+            Text(" $working", style = MaterialTheme.typography.bodySmall, color = accent)
+        }
     }
 }
 
@@ -676,7 +735,11 @@ fun ProjectsScreen() {
         items(Store.chats) { name ->
             val s = Store.status[name] ?: ChatStatus()
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                Text(name, style = MaterialTheme.typography.titleSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(if (s.working != null) accent else Color(0xFF34C759)))
+                    Spacer(Modifier.width(6.dp))
+                    Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 if (s.working != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Build, null, tint = accent, modifier = Modifier.size(12.dp))

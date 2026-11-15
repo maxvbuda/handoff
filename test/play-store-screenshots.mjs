@@ -86,7 +86,7 @@ try {
   await sleep(2500) // heartbeats land
 
   // 2. Claude's suggested next step, one tap to send back.
-  launch({ target: 'website', draft: '[]', notes: history })
+  launch({ target: 'website', suggestionsOn: true, draft: '[]', notes: history }) // on: the last run left it off
   await shot('2-suggestion', 7000)
 
   // 3. A note being written, for the chat picked in To.
