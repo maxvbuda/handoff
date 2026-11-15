@@ -104,7 +104,7 @@ Setup starts the relay on your Mac (and again at every login), and zrok gives it
 - **Without zrok,** `handoff relay setup` just tells you how to install it, and nothing changes: you stay on ntfy.sh.
 - **Older watch apps** (before Hand-Off 1.3) can't move, so they stay on ntfy.sh even after you set it up.
 - **Private, like ntfy.sh:** the relay only ever sees encrypted messages, and only accepts Handoff's. It keeps them for 12 hours in `~/.claude-watch-notes/relay`.
-- **Your Mac has to be on.** While it's off or asleep the watch can't send notes, but no Claude session could work on them then anyway.
+- **Your Mac has to be on.** While it's off or asleep the watch can't send notes, but no Claude session could work on them then anyway. A MacBook sleeps when you close the lid, even while `handoff start` runs; keep it open, or use [LidWake](https://github.com/aaryanbindage/Lidwake) (`lidwake start -b --max 0`, with no time limit), which `handoff start` suggests when it's installed.
 - `handoff relay status` checks it, and `handoff relay off` goes back to ntfy.sh (pair again afterwards).
 
 ## Notes

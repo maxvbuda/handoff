@@ -16,3 +16,4 @@ Help the user set up Handoff. This plugin is instructions only; the work is done
    - Not paired yet (`~/.claude-watch-notes/config.json` doesn't exist): run `/handoff:pair`, or `handoff pair` in Terminal.
    - Then, in Terminal, `handoff start` in the project they want Claude to work on.
    - Optional: `handoff mail` to email Claude too (it uses the Mail app), and `handoff host ~/folder` to start chats from the watch.
+   - On a MacBook (`pmset -g batt` mentions InternalBattery): closing the lid puts it to sleep even while `handoff start` runs, and notes wait until it wakes. If `command -v lidwake` finds LidWake, suggest running `lidwake start -b --max 0` before they close the lid and leave (`--max 0` drops LidWake's 12-hour limit; it still ends at 10% battery, or with `lidwake stop`; `--claude` would end after Claude's first reply, so not that). If LidWake isn't installed, say they can keep the lid open instead.

@@ -40,6 +40,19 @@ function run(file, args, opts) {
   return child
 }
 
+// A MacBook sleeps when its lid closes, even under caffeinate, and then notes wait until it wakes.
+// LidWake (github.com/aaryanbindage/Lidwake) keeps it awake with the lid closed: if it's installed
+// and not already running, say how. `--claude` would end after Claude's first reply, so not that.
+function lidTip() {
+  if (process.platform !== 'darwin') return null
+  try { if (!execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf8' }).includes('InternalBattery')) return null } catch { return null }
+  let state
+  try { state = execFileSync('lidwake', ['status', '--short'], { encoding: 'utf8', timeout: 5000 }).trim() } catch { return null }
+  if (state !== 'idle') return null
+  return 'Closing the lid puts this MacBook to sleep, and notes then wait until it wakes. To keep it working with\n' +
+    'the lid closed, run this in another Terminal tab (no time limit; it stops at 10% battery, or with lidwake stop):\n  lidwake start -b --max 0'
+}
+
 if (cmd === 'start') {
   // --name sets the chat's name on the watch (default: this folder's name). Everything else goes to claude.
   let name = path.basename(process.cwd())
@@ -63,6 +76,8 @@ if (cmd === 'start') {
     'Claude Code will warn about development channels: choose "I am using this for local development".\n' +
     'It may also say "server:handoff · no MCP server configured with that name". That\'s expected: Handoff\'s\n' +
     'server is passed on the command line, which that check doesn\'t look at. Notes still arrive.\n')
+  const tip = lidTip()
+  if (tip) console.log(tip + '\n')
   // caffeinate keeps the Mac awake (so Claude can keep working) for as long as the session runs.
   // Tells this session's Handoff server that it's listening, so it (not other open sessions) takes the notes.
   const opts = { stdio: 'inherit', env: { ...process.env, CLAUDE_WATCH_NOTES_CHANNEL: '1', CLAUDE_WATCH_NOTES_NAME: name } }
