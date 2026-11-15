@@ -715,6 +715,28 @@ async function relay(sub) {
     console.log(`Handoff relay on ${r.local}${settings.url ? `, on the internet as ${settings.url}` : ''}`)
     return
   }
+  if (sub === 'share') { // the zrok login item runs this
+    // When the Mac changes networks or sleeps, zrok can die without telling its servers, and the old
+    // share keeps the name: every new try then fails with "name … is in use by share 'abc123'". That
+    // share is ours (the name is), so release it; launchd starts this again a minute later.
+    const z = zrok()
+    if (!z || !settings.name) { console.error('No relay set up. Run: handoff relay setup'); process.exit(1) }
+    const p = spawn(z, ['share', 'public', `http://127.0.0.1:${settings.port || RELAY_PORT}`, '--name-selection', `public:${settings.name}`, '--headless'])
+    let stale
+    const watch = d => {
+      process.stdout.write(d)
+      const m = /in use by share '([\w-]+)'/.exec(String(d))
+      if (m && !stale) {
+        stale = m[1]
+        try { execFileSync(z, ['delete', 'share', stale], { stdio: 'inherit' }) } catch {}
+        p.kill()
+      }
+    }
+    p.stdout.on('data', watch)
+    p.stderr.on('data', watch)
+    p.on('exit', code => process.exit(code ?? 1))
+    return
+  }
   if (sub === 'status') {
     const url = ownRelay()
     if (!url) return console.log('Not using your own relay: the watch and this Mac talk through ntfy.sh. Set one up with: handoff relay setup')
@@ -763,7 +785,7 @@ async function relay(sub) {
   const log = path.join(RELAY_DIR, 'zrok.log')
   fs.writeFileSync(log, '')
   // A minute between tries: zrok answers quick retries with 429 ("the zrok service is busy") and keeps refusing.
-  startAgent(AGENTS.share, [z, 'share', 'public', `http://127.0.0.1:${RELAY_PORT}`, '--name-selection', `public:${name}`, '--headless'], log, 60)
+  startAgent(AGENTS.share, [process.execPath, fileURLToPath(import.meta.url), 'relay', 'share'], log, 60)
   console.log('Started your relay on this Mac (it starts again at login). Putting it on the internet with zrok…')
 
   // zrok prints the share's address once it's up ("access your zrok share at … handoff-….shares.zrok.io").
