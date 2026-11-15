@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased, with Hand-Off 1.5
+
+- **Clips with sound:** an MP4 Claude sends keeps its sound. It plays silently in the list, and with sound when you tap it open full screen (Apple Watch and Wear OS).
+
 ## Unreleased, with Hand-Off 1.4
 
 - **Video clips instead of GIFs:** when what Claude built moves, it sends a short MP4 (smooth, full color, 30 frames a second, a fraction of a GIF's size), which plays on the watch, silent and looping. Hand-Off 1.4 tells the Mac it can play them; to a watch on Hand-Off 1.3 or Wear OS, Claude still sends a GIF.

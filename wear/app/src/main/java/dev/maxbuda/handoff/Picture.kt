@@ -39,9 +39,9 @@ object Picture {
     }
 }
 
-/** Shows a screenshot, playing it if it's a clip: a GIF, or an MP4 (silent, looping, no controls). */
+/** Shows a screenshot, playing it if it's a clip: a GIF, or an MP4 (looping, no controls; its sound only if `sound`, as full screen). */
 @Composable
-fun PictureView(id: String, modifier: Modifier = Modifier) {
+fun PictureView(id: String, modifier: Modifier = Modifier, sound: Boolean = false) {
     val file = Store.shotFile(id)
     var video by remember(id) { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(id) { video = withContext(Dispatchers.IO) { runCatching { file.inputStream().use { Picture.isVideo(it.readNBytes(12)) } }.getOrDefault(false) } }
@@ -50,7 +50,7 @@ fun PictureView(id: String, modifier: Modifier = Modifier) {
         true -> AndroidView(
             factory = { ctx ->
                 VideoView(ctx).apply {
-                    setOnPreparedListener { mp -> mp.isLooping = true; mp.setVolume(0f, 0f); start() }
+                    setOnPreparedListener { mp -> mp.isLooping = true; if (!sound) mp.setVolume(0f, 0f); start() }
                     setVideoPath(file.path)
                 }
             },

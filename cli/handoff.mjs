@@ -481,7 +481,7 @@ function host(root) {
       'will not see or answer questions: do it autonomously in this project, making reasonable assumptions. If an action is ' +
       `blocked by the permission system, skip it and mention it. When finished, call watch_note_done with note_id ${n.id}, ` +
       'a short summary, optionally a suggestion (the next prompt they would likely send) and, if it changed something ' +
-      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of a short MP4 clip if it moves (under 4 MB; ffmpeg -y -t 6 -i VIDEO -vf "fps=30,scale=480:-2" -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart CLIP.mp4; if the watch can\'t play videos, watch_note_done says to send a GIF instead). ' +
+      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of a short MP4 clip if it moves (under 4 MB; ffmpeg -y -t 6 -i VIDEO -vf "fps=30,scale=480:-2" -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 64k -movflags +faststart CLIP.mp4; if the watch can\'t play videos, watch_note_done says to send a GIF instead). ' +
       'If you reach a real choice only they can make, you may ask once with watch_ask (they tap an answer on the watch).'
     const args = ['-p', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
       ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done', 'mcp__handoff__watch_ask',

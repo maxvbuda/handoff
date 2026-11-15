@@ -718,7 +718,7 @@ fun ShotScreen(nav: NavHostController, id: String) {
 /** A screenshot filling the screen. */
 @Composable
 fun FullScreenShot(id: String) {
-    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) { PictureView(id, Modifier.fillMaxSize()) }
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) { PictureView(id, Modifier.fillMaxSize(), sound = true) }
 }
 
 /** Each open chat: what it's working on, and its folder's git status. */

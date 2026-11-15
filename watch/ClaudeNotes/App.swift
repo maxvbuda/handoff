@@ -1298,7 +1298,7 @@ struct ScreenshotView: View {
     var body: some View {
         GeometryReader { geo in
             ScrollView(zoomed ? [.horizontal, .vertical] : .vertical) {
-                PictureView(picture: picture)
+                PictureView(picture: picture, sound: true)
                     .frame(width: geo.size.width * (zoomed ? 2.5 : 1))
                     .onTapGesture { withAnimation { zoomed.toggle() } }
             }
@@ -1444,10 +1444,11 @@ final class Picture {
 /// Shows a picture, playing it if it's a clip. An MP4 plays on its own, silent and looping, like a GIF.
 struct PictureView: View {
     let picture: Picture
+    var sound = false // an MP4's sound: only full screen, so a list of clips stays quiet
 
     var body: some View {
         if let video = picture.video {
-            ClipView(url: video)
+            ClipView(url: video, sound: sound)
         } else if picture.animated {
             TimelineView(.animation(minimumInterval: picture.step)) { t in
                 Image(uiImage: picture.frame(at: t.date.timeIntervalSinceReferenceDate)).resizable().scaledToFit()
@@ -1458,10 +1459,11 @@ struct PictureView: View {
     }
 }
 
-/// An MP4 clip, playing in a loop with no sound or controls while it's on screen. (watchOS has no
+/// An MP4 clip, playing in a loop with no controls while it's on screen; with its sound only when asked. (watchOS has no
 /// AVPlayerLooper: it starts over when it reaches the end.)
 struct ClipView: View {
     let url: URL
+    var sound = false
     @State private var player: AVPlayer?
     @State private var aspect: CGFloat = 1 // width / height, once the video's size is known
 
@@ -1477,7 +1479,7 @@ struct ClipView: View {
                     if shown.height != 0 { aspect = abs(shown.width / shown.height) }
                 }
                 let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-                player.isMuted = true
+                player.isMuted = !sound
                 self.player = player
                 player.play()
                 for await _ in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification, object: player.currentItem) {
