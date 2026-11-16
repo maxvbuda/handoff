@@ -201,7 +201,7 @@ const TOOLS = [
         note_id: { type: 'string' },
         summary: { type: 'string' },
         suggestion: { type: 'string', description: 'Optional: the next prompt the user would most likely send, as they would type it (under 80 characters). Shown on the watch with an Accept suggestion button.' },
-        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or a short MP4 clip (or GIF) of something moving (under 4 MB, made from a video with ffmpeg). Shown on the watch.' },
+        image: { type: 'string', description: 'Optional: absolute path of a screenshot of what you changed (PNG or JPEG under 300 KB, about 480 px wide), or an MP4 clip (or GIF) of something moving (made from a video with ffmpeg). Shown on the watch.' },
       },
       required: ['note_id', 'summary'],
     },
@@ -247,16 +247,15 @@ const sendSuggestion = (text, noteId) => postBack('s', { s: text, note: noteId, 
 const sendImage = (img, noteId) => postBack('i', { i: img.toString('base64'), note: noteId, chat: NAME, ts: new Date().toISOString() }, 60_000)
 
 // Claude makes the screenshot (this server runs nothing); we only check it's a small PNG, JPEG, or a
-// clip: an MP4 (or .mov) or a GIF. A clip may be much bigger, but sealed (base64 twice) it must
-// stay under the watch's 8 MB download limit (Store.maxDownload).
-const IMAGE_MAX = 300 * 1024, CLIP_MAX = 4 * 1024 * 1024, NTFY_CLIP_MAX = 1100 * 1024
+// clip: an MP4 (or .mov) or a GIF. A clip may be any size for watches that say so (note.anySize,
+// Hand-Off 1.5 and later); older ones download at most 8 MB sealed (base64 twice), so a 4 MB clip.
+const IMAGE_MAX = 300 * 1024, OLD_CLIP_MAX = 4 * 1024 * 1024, NTFY_CLIP_MAX = 1100 * 1024
 const GIF_HOW = 'ffmpeg -y -t 6 -i VIDEO -vf "fps=12,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" CLIP.gif'
 function readImage(p, note) {
   const f = path.resolve(p)
   let st
   try { st = fs.statSync(f) } catch { throw new Error(`Can't read the image ${f}. Nothing was marked done; try again with a screenshot that exists, or without image.`) }
   if (!st.isFile()) throw new Error(`${f} isn't a file. Nothing was marked done.`)
-  if (st.size > CLIP_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB (a video or GIF, under 4 MB). Nothing was marked done. For a clip, make it shorter and try again.`)
   const b = fs.readFileSync(f)
   const png = b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   const jpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
@@ -266,10 +265,11 @@ function readImage(p, note) {
   // Hand-Off before 1.4 (and Wear OS) can't play videos; the watch says so in each note it sends.
   if (video && !note.mp4) throw new Error(`This note came from a watch app that can't play videos. Nothing was marked done. Send a GIF instead: ${GIF_HOW}`)
   const clip = gif || video
+  if (clip && !note.anySize && st.size > OLD_CLIP_MAX) throw new Error(`The clip is ${Math.round(st.size / 1024)} KB; this watch app only downloads clips under 4 MB. Nothing was marked done. Make it shorter (a smaller -t in ffmpeg) and try again.`)
   if (!clip && st.size > IMAGE_MAX) throw new Error(`The image is ${Math.round(st.size / 1024)} KB; it must be under 300 KB. Nothing was marked done. Shrink it (sips -Z 480 -s format jpeg -s formatOptions 70 FILE --out SMALL.jpg) and try again.`)
   // ntfy.sh refuses files over 2 MB, which a sealed clip of more than about 1.1 MB is. Your own relay has no such limit.
   if (clip && st.size > NTFY_CLIP_MAX && readConfig()?.topicURL?.startsWith('https://ntfy.sh/'))
-    throw new Error(`The clip is ${Math.round(st.size / 1024)} KB, and through ntfy.sh it must be under ${Math.round(NTFY_CLIP_MAX / 1024)} KB. Nothing was marked done. Make it shorter (a smaller -t in ffmpeg; keep the quality) and try again. (With your own relay, \`handoff relay setup\`, clips can be up to 4 MB.)`)
+    throw new Error(`The clip is ${Math.round(st.size / 1024)} KB, and through ntfy.sh it must be under ${Math.round(NTFY_CLIP_MAX / 1024)} KB. Nothing was marked done. Make it shorter (a smaller -t in ffmpeg; keep the quality) and try again. (With your own relay, \`handoff relay setup\`, clips can be any size.)`)
   return b
 }
 

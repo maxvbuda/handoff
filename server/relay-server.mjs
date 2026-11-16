@@ -16,8 +16,8 @@ import path from 'node:path'
 
 const TOPIC = /^cwp?-[0-9a-f]{32}(-[a-z])?$/
 const KEEP_MS = 12 * 3600_000
-const MAX_BODY = 16 * 1024 * 1024 // a 4 MB GIF, sealed twice over in base64, is about 7 MB
-const MAX_FILES = 300 * 1024 * 1024 // attachments on disk; the oldest go first
+const MAX_BODY = 512 * 1024 * 1024 // only so a stray upload can't fill the disk: clips have no size limit
+const MAX_FILES = 2 * 1024 * 1024 * 1024 // attachments on disk; the oldest go first
 const PER_TOPIC = 500 // newest messages kept per topic
 const ATTACH_AT = 4096 // like ntfy: the Mac and the watch read big bodies from the attachment url
 const KEEPALIVE_MS = 45_000

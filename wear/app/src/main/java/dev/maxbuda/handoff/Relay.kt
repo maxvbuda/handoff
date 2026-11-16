@@ -47,8 +47,8 @@ object Relay {
     class Event(val id: String, val body: JSONObject?, val attachment: Attachment? = null)
     class Attachment(val url: String, val size: Long)
 
-    /** For screenshots and GIFs, which can be a few megabytes: more time to download. */
-    private val downloads: OkHttpClient = http.newBuilder().readTimeout(20, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
+    /** For screenshots and clips, which can be big: more time to download. */
+    private val downloads: OkHttpClient = http.newBuilder().readTimeout(20, TimeUnit.SECONDS).callTimeout(15, TimeUnit.MINUTES).build()
 
     /** Downloads an attachment as text (a sealed message), or null if it failed or expired. */
     suspend fun download(url: String): String? = run(downloads.newCall(Request.Builder().url(url).build())) { call ->

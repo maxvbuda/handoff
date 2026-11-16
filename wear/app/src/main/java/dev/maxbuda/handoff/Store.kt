@@ -147,8 +147,6 @@ object Store {
     const val APPROVAL_WINDOW = "10m" // older prompts have likely been answered at the Mac
     private const val KEEP = 12
     const val KEEP_SHOTS = 5 // unsaved
-    /** The biggest screenshot download (sealed): a 4 MB GIF, as the Mac allows, plus base64 twice. */
-    const val MAX_DOWNLOAD = 8_000_000
     /** What Ship it sends. */
     const val SHIP_IT = "Ship it: commit all the changes with a clear message and push them. If this project is deployed " +
         "somewhere (a website with a deploy script or hosting set up), deploy it too. Don't change anything else."
@@ -308,6 +306,7 @@ object Store {
         val fields = JSONObject().put("id", note.id).put("t", note.text).put("ts", iso(note.ts))
         note.to?.let { fields.put("to", it) }
         fields.put("mp4", "1") // we play MP4 clips, so Claude may send one instead of a GIF
+        fields.put("anySize", "1") // of any size
         return Relay.publish(fields, p.key, p.topicURL) != null
     }
 
@@ -512,7 +511,6 @@ object Store {
             if (shots.any { it.id == ev.id }) continue
             var body = ev.body
             ev.attachment?.let { a ->
-                if (a.size > MAX_DOWNLOAD) return@let
                 // Not downloaded (offline, or it expired): try again next time, unless it's gone for good.
                 val sealed = Relay.download(a.url) ?: return
                 body = runCatching { JSONObject(String(Crypto.open(sealed, p.key))) }.getOrNull()

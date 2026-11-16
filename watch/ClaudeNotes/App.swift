@@ -119,7 +119,7 @@ enum Relay {
     static let downloads: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 120
+        config.timeoutIntervalForResource = 15 * 60 // big clips
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
     }()
@@ -267,8 +267,6 @@ final class Store {
     /// app froze on Delete. `shots` changing is what redraws them.
     @ObservationIgnored private var images: [String: Picture] = [:]
     static let keepShots = 5 // unsaved
-    /// The biggest screenshot download (sealed): a 4 MB GIF, as the Mac allows, plus base64 twice.
-    static let maxDownload = 8_000_000
     static let shotsFolder = URL.applicationSupportDirectory.appending(path: "shots")
     static func shotFile(_ id: String) -> URL { shotsFolder.appending(path: id.filter { $0.isLetter || $0.isNumber }) }
     /// This evening's recap, until dismissed or the next one comes.
@@ -675,7 +673,7 @@ final class Store {
         for ev in events.reversed() where got.count < Self.keepShots {
             guard let id = ev.id else { continue }
             var sealed = ev.message
-            if let a = ev.attachment, (a.size ?? 0) <= Self.maxDownload, let u = URL(string: a.url) {
+            if let a = ev.attachment, let u = URL(string: a.url) {
                 // Not downloaded (offline, or it expired): try again next time, unless it's gone for good.
                 guard let (file, res) = try? await Relay.downloads.data(from: u) else { return }
                 sealed = (res as? HTTPURLResponse)?.statusCode == 200 ? String(data: file, encoding: .utf8) : nil
@@ -831,6 +829,7 @@ final class Store {
             var fields = ["id": note.id.uuidString, "t": note.text, "ts": note.ts.ISO8601Format()]
             fields["to"] = note.to
             fields["mp4"] = "1" // we play MP4 clips, so Claude may send one instead of a GIF
+            fields["anySize"] = "1" // of any size
             let payload = try JSONSerialization.data(withJSONObject: fields)
             return try await Ntfy.publish(payload, key: SymmetricKey(data: pairing.key), to: pairing.topicURL) != nil
         } catch {

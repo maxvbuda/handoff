@@ -293,12 +293,25 @@ describe('delivery', () => {
     assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(mp4))
   })
 
+  test('watch_note_done sends a clip over 4 MB when the watch takes any size', async () => {
+    const n = { ...note('big'), mp4: '1', anySize: '1' }
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const mp4 = Buffer.concat([Buffer.from('\0\0\0\x20ftypisom'), crypto.randomBytes(10_000_000)])
+    const file = path.join(dir, 'big.mp4')
+    fs.writeFileSync(file, mp4)
+    const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
+    assert.match(r.result.content[0].text, /Screenshot sent/)
+    const ev = (await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').map(l => JSON.parse(l)).pop()
+    assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(mp4))
+  })
+
   test('watch_note_done refuses a screenshot that is too big or not an image, and leaves the note open', async () => {
     const n = note('bad image')
     await post(cfg.topicURL, seal(n, cfg.key))
     await s.waitFor(pushFor(n.id))
     for (const [name, bytes, why] of [['big.png', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(400_000)]), /under 300 KB/],
-      ['big.gif', Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(4_300_000)]), /under 4 MB/],
+      ['big.gif', Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(4_300_000)]), /under 4 MB/], // the note isn't from a watch that takes any size
       ['clip.mp4', Buffer.from('\0\0\0\x20ftypisom'), /can't play videos[\s\S]*\.gif/], // the note isn't from a watch that plays them
       ['notes.txt', Buffer.from('hello'), /isn't a PNG, JPEG, GIF or MP4/], ['missing.jpg', null, /Can't read/]]) {
       const file = path.join(dir, name)
@@ -1210,11 +1223,11 @@ describe('your own relay (handoff relay)', () => {
     const r = await startRelay({ dir: tmpDir(), publicURL: undefined })
     try {
       const t = `${r.url}/${topic()}-i`
-      const big = crypto.randomBytes(5 * 1024 * 1024).toString('base64') // about 7 MB, like a sealed 4 MB GIF
+      const big = crypto.randomBytes(15 * 1024 * 1024).toString('base64') // about 20 MB, a sealed 11 MB clip
       const ev = await post(t, big)
       assert.equal(ev.attachment.size, big.length)
       assert.equal(await (await fetch(ev.attachment.url)).text(), big)
-      assert.equal((await fetch(`${t}`, { method: 'POST', body: Buffer.alloc(17 * 1024 * 1024) })).status, 413)
+      assert.equal((await fetch(`${t}`, { method: 'POST', headers: { 'content-length': String(513 * 1024 * 1024) }, body: 'x', duplex: 'half' }).catch(() => ({ status: 413 }))).status, 413)
     } finally { await r.close() }
   })
 

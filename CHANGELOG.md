@@ -3,6 +3,7 @@
 ## Unreleased, with Hand-Off 1.5
 
 - **Clips with sound:** an MP4 Claude sends keeps its sound. It plays silently in the list, and with sound when you tap it open full screen (Apple Watch and Wear OS).
+- **Clips of any size:** no more 4 MB limit with your own relay (`handoff relay setup`). Older watch apps still get clips under 4 MB; through ntfy.sh, clips stay under 1.1 MB.
 
 ## Unreleased, with Hand-Off 1.4
 
