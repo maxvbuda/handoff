@@ -736,23 +736,28 @@ async function relay(sub) {
   if (sub === 'share') { // the zrok login item runs this
     // When the Mac changes networks or sleeps, zrok can die without telling its servers, and the old
     // share keeps the name: every new try then fails with "name … is in use by share 'abc123'". That
-    // share is ours (the name is), so release it; launchd starts this again a minute later.
+    // share is ours (the name is), so release it and start again right away. Anything else, launchd
+    // starts this again a minute later.
     const z = zrok()
     if (!z || !settings.name) { console.error('No relay set up. Run: handoff relay setup'); process.exit(1) }
-    const p = spawn(z, ['share', 'public', `http://127.0.0.1:${settings.port || RELAY_PORT}`, '--name-selection', `public:${settings.name}`, '--headless'])
-    let stale
-    const watch = d => {
-      process.stdout.write(d)
-      const m = /in use by share '([\w-]+)'/.exec(String(d))
-      if (m && !stale) {
-        stale = m[1]
-        try { execFileSync(z, ['delete', 'share', stale], { stdio: 'inherit' }) } catch {}
-        p.kill()
+    const share = (tries = 0) => {
+      const p = spawn(z, ['share', 'public', `http://127.0.0.1:${settings.port || RELAY_PORT}`, '--name-selection', `public:${settings.name}`, '--headless'])
+      let released = false
+      const watch = d => {
+        process.stdout.write(d)
+        const m = /in use by share '([\w-]+)'/.exec(String(d))
+        if (m && !released) {
+          released = true
+          try { execFileSync(z, ['delete', 'share', m[1]], { stdio: 'inherit' }) } catch {}
+          p.kill()
+        }
       }
+      p.stdout.on('data', watch)
+      p.stderr.on('data', watch)
+      // A few times in a row at most, so a share we can't release doesn't spin.
+      p.on('exit', code => released && tries < 3 ? setTimeout(() => share(tries + 1), 2000) : process.exit(code ?? 1))
     }
-    p.stdout.on('data', watch)
-    p.stderr.on('data', watch)
-    p.on('exit', code => process.exit(code ?? 1))
+    share()
     return
   }
   if (sub === 'status') {
