@@ -1143,7 +1143,9 @@ function extrasCommand(sub, name, ...args) {
   } else if (sub === 'cover' && name === 'restart') {
     if (!fs.existsSync(COVER_PLIST)) { console.error('Install it first: handoff extras install cover'); process.exit(1) }
     sh('launchctl', ['kickstart', '-k', `gui/${uid}/${COVER_LABEL}`])
-    console.log(coverRunning() ? 'The fake lock screen restarted.' : `It didn't start; see ${path.join(DIR, 'cover', 'cover.log')}`)
+    let up = false // launchd takes a moment to start it again
+    for (let i = 0; i < 20 && !(up = coverRunning()); i++) execFileSync('sleep', ['0.25'])
+    console.log(up ? 'The fake lock screen restarted.' : `It didn't start; see ${path.join(DIR, 'cover', 'cover.log')}`)
   } else if (sub === 'cover' && name === 'wallpaper' && args[0]) {
     const choice = args[0]
     if (choice === 'none' || choice === 'desktop') saveExtras({ coverWallpaper: choice === 'none' ? undefined : 'desktop' })
