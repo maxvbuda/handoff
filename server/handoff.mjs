@@ -98,6 +98,102 @@ if (process.argv[2] === 'pair' && process.argv[3] === '--nearby') {
   await new Promise(() => {}) // the server runs until paired or timed out
 }
 
+// ---------- pair by picking the watch (Hand-Off 1.5 and later) ----------
+// `handoff pair` lists the watches showing their pairing code on the same internet connection; you
+// pick yours and approve on the watch. Apple Watch apps can't use Bonjour, so "the same network" is
+// "the same public address": both look it up and meet on a lobby topic derived from it. In the lobby
+// a watch says hello with an X25519 public key; we answer the one you pick with ours, and both show a
+// 6-digit number from the shared secret, which you check on the watch before approving (that's what
+// stops someone else behind the same address from pairing in the middle). Then the watch sends the
+// same offer as with a code, sealed with that key, and gets the same ack. Typing the code still works,
+// and older watches only have the code. Exit status 3: show a code to type on the watch instead.
+const LOBBY_IP = 'https://api.ipify.org' // IPv4 only, so the watch and the Mac get the same answer
+const lobbyURL = ip => `${RELAY}/cwp-${Buffer.from(crypto.hkdfSync('sha256', ip, 'handoff-lobby', 'topic', 16)).toString('hex')}`
+function lobbySession(shared, watchPub, macPub) {
+  const derive = (info, n) => Buffer.from(crypto.hkdfSync('sha256', shared, 'handoff-lobby', Buffer.concat([Buffer.from(info), watchPub, macPub]), n))
+  return { key: derive('key', 32), number: String(derive('sas', 4).readUInt32BE() % 1_000_000).padStart(6, '0') }
+}
+if (process.argv[2] === 'pair' && process.argv[3] === '--lobby') {
+  const readline = await import('node:readline')
+  const { execFileSync, spawn } = await import('node:child_process')
+  const name = (() => { try { return execFileSync('scutil', ['--get', 'ComputerName'], { encoding: 'utf8' }).trim() } catch { return 'Mac' } })()
+  let ip = process.env.CLAUDE_WATCH_NOTES_LOBBY_IP
+  if (!ip) try { ip = (await (await fetch(LOBBY_IP, { signal: AbortSignal.timeout(10_000) })).text()).trim() } catch {}
+  const lobby = ip && /^[\d.:a-f]{3,45}$/i.test(ip) ? lobbyURL(ip) : null
+  const mac = crypto.generateKeyPairSync('x25519')
+  const macPub = Buffer.from(mac.publicKey.export({ format: 'jwk' }).x, 'base64url')
+  const watches = [] // {id, name, pub}, in the order they said hello
+  let picked = null // {id, key, number}: waiting for that watch's approval
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  const say = text => { readline.clearLine(process.stdout, 0); readline.cursorTo(process.stdout, 0); console.log(text); rl.prompt(true) }
+  const send = obj => fetch(lobby, { method: 'POST', body: JSON.stringify(obj) }).then(r => r.ok, () => false)
+  const done = code => { rl.close(); process.exit(code) }
+
+  rl.setPrompt('  Number or code: ')
+  console.log(lobby
+    ? '\n  Open Hand-Off on your watch. Watches on this network show up here (Hand-Off 1.5 and later):\n'
+    : "\n  Couldn't look for watches on this network.\n")
+  console.log('  Type the number of yours, or the code your watch shows. (Press Return if your watch asks you for a code.)\n')
+  rl.prompt()
+
+  rl.on('line', async line => {
+    const t = line.trim()
+    if (!t) return done(3)
+    if (/^\d{1,2}$/.test(t)) {
+      const w = watches[Number(t) - 1]
+      if (!w) return say(`  There's no watch ${t}.`)
+      const shared = crypto.diffieHellman({ privateKey: mac.privateKey, publicKey: crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: w.pub.toString('base64url') }, format: 'jwk' }) })
+      picked = { id: w.id, ...lobbySession(shared, w.pub, macPub) }
+      if (!await send({ pick: w.id, pub: macPub.toString('base64'), name })) { picked = null; return say("  Couldn't reach the relay. Try again.") }
+      return say(`\n  Now approve on the watch. Check it shows  ${picked.number.slice(0, 3)} ${picked.number.slice(3)}  (if not, don't approve).\n`)
+    }
+    const code = [...t.toUpperCase()].filter(ch => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'.includes(ch)).join('')
+    if (code.length !== 8) return say('  Type a watch\'s number, or an 8-character code like K7QX-M2PA.')
+    rl.close()
+    spawn(process.execPath, [process.argv[1], 'pair', code], { stdio: 'inherit' }).on('exit', c => process.exit(c ?? 1))
+  })
+  rl.on('SIGINT', () => done(1))
+
+  setTimeout(() => { say('  Timed out. Run handoff pair again.'); done(1) }, Number(process.env.CLAUDE_WATCH_NOTES_PAIR_TIMEOUT_MS) || 600_000)
+  if (lobby) {
+    ;(async () => {
+      for (let since = '2m'; ;) { // hellos from the last 2 minutes: watches say it again every 20 seconds
+        try {
+          for await (const ev of events(`${lobby}/json?since=${since}`, new AbortController().signal)) {
+            if (ev.event !== 'message') continue
+            since = ev.id
+            let m
+            try { m = JSON.parse(ev.message) } catch { continue }
+            if (typeof m.hello === 'string' && /^[0-9a-f]{16}$/.test(m.hello) && !watches.some(w => w.id === m.hello)) {
+              const pub = Buffer.from(String(m.pub), 'base64')
+              if (pub.length !== 32) continue
+              watches.push({ id: m.hello, name: String(m.name || 'Watch').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 40), pub })
+              say(`  ${watches.length}. ${watches.at(-1).name}`)
+            } else if (picked && m.no === picked.id) {
+              picked = null
+              say('  The watch said no. Pick again, or type the code.')
+            } else if (picked && m.offer === picked.id) {
+              let p
+              try { p = open(String(m.box), picked.key) } catch { continue }
+              const topicOK = typeof p.topic === 'string' && p.topic.startsWith(`${RELAY}/cw-`) && /^[0-9a-f]{32}$/.test(p.topic.slice(RELAY.length + 4))
+              if (typeof p.n !== 'string' || Buffer.from(String(p.key), 'base64').length !== 32 || !topicOK) continue
+              const own = p.moves === true ? await reachable(ownRelay()) : null
+              const topicURL = own ? `${own}${p.topic.slice(RELAY.length)}` : p.topic
+              if (!await send({ ack: picked.id, box: seal(own ? { ack: p.n, relay: own } : { ack: p.n }, picked.key) })) { say("  Couldn't answer the watch. Try again."); continue }
+              fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
+              fs.writeFileSync(CONFIG, JSON.stringify({ topicURL, key: p.key }, null, 2), { mode: 0o600 })
+              say(`  Paired${own ? `, through your own relay (${own})` : ''}. Running Claude Code sessions pick this up automatically.\n\n  Next: handoff start\n`)
+              return done(0)
+            }
+          }
+        } catch {}
+        await new Promise(r => setTimeout(r, 3000))
+      }
+    })()
+  }
+  await new Promise(() => {}) // until paired, a code is typed, or timed out
+}
+
 if (process.argv[2] === 'pair') {
   const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // no 0/O, 1/I/L
   const typed = process.argv[3]
@@ -184,6 +280,7 @@ If you hit a real choice only the user can make (which of two designs, whether t
 If a message says the user tapped Stop on their watch, stop working on the current note right away: don't start anything new, and call watch_note_done with what was done so far.
 Notes with source="email" were emailed by the user instead: the summary is emailed back to them, so write it for them to read.
 Notes with source="schedule" are recurring tasks the user set up on the watch; they come back on schedule, so do this run's work only.
+Notes with screenshots="off": the user turned screenshots off on the watch, so don't make or pass an image.
 If you were not started as a channel, call watch_inbox to fetch pending notes.`
 
 const TOOLS = [
@@ -228,7 +325,7 @@ const allNotes = () => fs.readdirSync(NOTES).filter(f => f.endsWith('.json'))
 function push(note) {
   out({
     method: 'notifications/claude/channel',
-    params: { content: note.text, meta: { note_id: note.id, at: note.at, ...(note.source && { source: note.source }) } },
+    params: { content: note.text, meta: { note_id: note.id, at: note.at, ...(note.source && { source: note.source }), ...(note.shots === false && { screenshots: 'off' }) } },
   })
 }
 
@@ -308,6 +405,7 @@ const waiting = new Map() // watch_ask question id -> resolve(choice)
 function verdict(v) {
   if (typeof v?.a === 'string' && waiting.has(v.a)) return waiting.get(v.a)(v.choice)
   if (v?.stop !== undefined) return stopped(v)
+  if (v?.open !== undefined) return opened(v)
   const id = String(v?.v ?? '')
   if (!asked.has(id) || typeof v.ok !== 'boolean' || (v.chat && v.chat !== NAME)) return
   asked.delete(id)
@@ -324,6 +422,57 @@ function stopped(v) {
   if (!n) return
   out({ method: 'notifications/claude/channel', params: { content: 'The user tapped Stop on their watch. Stop working on this note now: ' +
     `don't start anything new, and call watch_note_done with note_id ${n.id} and what was done so far.`, meta: { note_id: n.id, source: 'stop' } } })
+}
+
+// Open on computer on the watch: bring this chat's Terminal (or iTerm) window to the front. (A
+// `handoff host` chat is opened by the host.) Its tab is the one on our terminal, found up the
+// process tree: the controlling terminal of `handoff start`.
+async function opened(v) {
+  if (v.open !== NAME || !(Date.now() - Date.parse(v.ts) < 5 * 60_000) || process.platform !== 'darwin') return
+  const { execFileSync } = await import('node:child_process')
+  let tty = process.env.CLAUDE_WATCH_NOTES_TTY || null // tests
+  for (let pid = process.pid, i = 0; pid > 1 && i < 20 && !tty; i++) {
+    try {
+      const [ppid, t] = execFileSync('ps', ['-o', 'ppid=,tty=', '-p', String(pid)], { encoding: 'utf8' }).trim().split(/\s+/)
+      if (t && t !== '??') tty = `/dev/${t}`
+      pid = Number(ppid)
+    } catch { break }
+  }
+  if (!tty) return log('watch: open, but no terminal found')
+  const script = `
+if application "Terminal" is running then
+  tell application "Terminal"
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is "${tty}" then
+          set selected of t to true
+          set index of w to 1
+          activate
+          return "Terminal"
+        end if
+      end repeat
+    end repeat
+  end tell
+end if
+if application "iTerm2" is running then
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is "${tty}" then
+            select w
+            select t
+            select s
+            activate
+            return "iTerm"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end if
+return ""`
+  try { log('watch: open', execFileSync(process.env.CLAUDE_WATCH_NOTES_OSASCRIPT || 'osascript', ['-e', script], { encoding: 'utf8', timeout: 10_000 }).trim() || `(no window on ${tty})`) } catch (e) { log('watch: open failed', e.message) }
 }
 
 // watch_ask: posts the question with the permission prompts on "<topic>-p" and waits for the tap
@@ -412,7 +561,8 @@ async function callTool(name, args = {}) {
     const f = noteFile(String(args.note_id || ''))
     let n
     try { n = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { throw new Error(`No watch note with id ${args.note_id}`) }
-    const image = typeof args.image === 'string' && args.image.trim() ? readImage(args.image.trim(), n) : null // before anything is saved
+    const wanted = typeof args.image === 'string' && args.image.trim() && n.shots !== false // Settings → Screenshots off: no image
+    const image = wanted ? readImage(args.image.trim(), n) : null // before anything is saved
     Object.assign(n, { status: 'done', summary: args.summary, doneAt: new Date().toISOString(), chat: NAME })
     const suggestion = typeof args.suggestion === 'string' ? args.suggestion.trim().slice(0, 200) : ''
     if (suggestion) n.suggestion = suggestion
@@ -422,6 +572,7 @@ async function callTool(name, args = {}) {
     const said = [`Marked ${n.id} done.`]
     if (suggestion) said.push(await sendSuggestion(suggestion, n.id)
       ? 'Suggestion sent to the watch.' : "The suggestion couldn't be sent to the watch (relay unreachable).")
+    if (args.image && n.shots === false) said.push('Screenshots are off on the watch, so the image wasn\'t sent.')
     if (image) said.push(await sendImage(image, n.id)
       ? 'Screenshot sent to the watch.' : "The screenshot couldn't be sent to the watch (relay unreachable).")
     return said.join(' ')

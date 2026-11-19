@@ -70,6 +70,15 @@ When Claude reaches a choice only you can make, it can **ask you** on the watch:
 
 When you get home, the work is done. Claude calls `watch_note_done` with a summary for each note; the summaries are in `~/.claude-watch-notes/notes/`. Notes that arrive while no session is running are handed to the next session that starts, exactly once even with several sessions open.
 
+## Mac extras
+
+Optional, off unless you install them: let the chats Handoff opens use your Mac's screen while you're
+away, even with the lid closed. `handoff extras install all` sets up screen control,
+[Deskhand](extras/deskhand/) (Karam Lamba) as Claude's `computer` tool, a [fake lock screen](extras/cover/)
+that opens with your real password and gets out of Claude's way, and
+[LidWake](https://github.com/aaryanbindage/Lidwake) to keep running with the lid closed. See
+[extras/](extras/) for what each one changes and what macOS still asks you.
+
 ## Email (optional)
 
 You can also email Claude, from your phone, a school computer, or anywhere you have Gmail. It uses the Mail app on your Mac, so you don't need a Google Script or any new account permissions. Your email account just has to be set up in Mail.

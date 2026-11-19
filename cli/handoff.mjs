@@ -3,7 +3,7 @@
 // The Claude Code plugin is skills only and runs this command; this command starts Handoff's server
 // (server/handoff.mjs) for the Claude Code sessions it opens.
 //
-//   handoff pair [CODE]       pair your watch (type the code it shows)
+//   handoff pair [CODE]       pair your watch (pick it from a list, or type the code it shows)
 //   handoff unpair            forget the watch this Mac is paired with
 //   handoff start [--name N] [args...]   start Claude Code listening for ideas
 //   handoff host [folder]     let the watch start chats in folder's projects (run headless here)
@@ -11,6 +11,7 @@
 //   handoff relay [setup|status|off]   run your own relay instead of ntfy.sh
 //   handoff inbox             print notes that aren't done (what /handoff:inbox runs)
 //   handoff done <id> <summary> [--suggestion S] [--image FILE]   mark a note done
+//   handoff extras [install|remove NAME]   optional Mac extras (extras/): screen, deskhand, cover, lidwake
 
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -24,7 +25,26 @@ import { CONFIG, DIR, NOTES, OWN_RELAY, alive, ownRelay, events, noteFile, open,
 const SERVER = fileURLToPath(new URL('../server/handoff.mjs', import.meta.url))
 
 // Handoff's MCP server, for the sessions this command opens. Its tools show up as mcp__handoff__*.
-const MCP_ARGS = ['--mcp-config', JSON.stringify({ mcpServers: { handoff: { command: process.execPath, args: [SERVER] } } })]
+// With the screen-control extra on (`handoff extras install screen`), its server too, as mcp__screen__*.
+// Read each time, so turning it on or off applies to the next chat.
+const SCREEN_SERVER = fileURLToPath(new URL('../extras/screen/server.mjs', import.meta.url))
+const SCREEN_TOOLS = ['screenshot', 'click', 'move', 'drag', 'scroll', 'type', 'key', 'batch'].map(t => `mcp__screen__screen_${t}`)
+const EXTRAS = path.join(DIR, 'extras.json')
+const extras = () => { try { return JSON.parse(fs.readFileSync(EXTRAS, 'utf8')) } catch { return {} } }
+const screenOn = () => extras().screen === true
+// `handoff lab screen-control awake on`: the display doesn't sleep while a chat or host runs, so the Mac
+// doesn't lock itself (screen control can't use a locked Mac). caffeinate -w stops when we do.
+const stayAwake = () => {
+  if (process.platform === 'darwin' && screenOn() && extras().awake === true)
+    spawn('caffeinate', ['-d', '-w', String(process.pid)], { stdio: 'ignore', detached: true }).unref()
+}
+// A host chat gets it unless the note was sent with Settings → Computer use off (`note.screen === false`, Hand-Off 1.5
+// and later); older apps have no such setting, so `lab screen-control on` alone decides.
+function mcpArgs(note) {
+  const servers = { handoff: { command: process.execPath, args: [SERVER] } }
+  if (screenOn() && (!note || note.screen !== false)) servers.screen = { command: process.execPath, args: [SCREEN_SERVER] }
+  return ['--mcp-config', JSON.stringify({ mcpServers: servers })]
+}
 // Custom channels need the development flag until Handoff is on Anthropic's approved list.
 const CHANNEL_ARGS = ['--dangerously-load-development-channels', 'server:handoff']
 
@@ -43,14 +63,47 @@ function run(file, args, opts) {
 // A MacBook sleeps when its lid closes, even under caffeinate, and then notes wait until it wakes.
 // LidWake (github.com/aaryanbindage/Lidwake) keeps it awake with the lid closed: if it's installed
 // and not already running, say how. `--claude` would end after Claude's first reply, so not that.
+const macBook = () => { try { return execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf8' }).includes('InternalBattery') } catch { return false } }
 function lidTip() {
-  if (process.platform !== 'darwin') return null
-  try { if (!execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf8' }).includes('InternalBattery')) return null } catch { return null }
+  if (process.platform !== 'darwin' || !macBook() || lidAwake()) return null
   let state
   try { state = execFileSync('lidwake', ['status', '--short'], { encoding: 'utf8', timeout: 5000 }).trim() } catch { return null }
   if (state !== 'idle') return null
   return 'Closing the lid puts this MacBook to sleep, and notes then wait until it wakes. To keep it working with\n' +
     'the lid closed, run this in another Terminal tab (no time limit; it stops at 10% battery, or with lidwake stop):\n  lidwake start -b --max 0'
+}
+
+// With the LidWake extra (`handoff extras install lidwake`), Handoff starts the session itself while a chat or host
+// runs: it ends once no `handoff start` or `handoff host` is left, or when the battery is at 10% (and then the Mac
+// sleeps, as LidWake does). A session you started yourself is left alone. Our own exit stops it right away
+// (lidwake stop: sleep is allowed again, nothing else), so quitting at your desk doesn't put the Mac to sleep.
+const HANDOFF_RUNNING = 'node .*handoff(\\.mjs)? (start|host)' // doesn't match itself, so it's safe in lidwake's --cmd
+let lidAwakeState
+function lidAwake() {
+  if (lidAwakeState !== undefined) return lidAwakeState
+  lidAwakeState = false
+  if (process.platform !== 'darwin' || extras().lidwake !== true || !macBook()) return false
+  const ours = path.join(DIR, 'lidwake-session')
+  const lw = args => execFileSync('lidwake', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 })
+  const session = () => { try { const j = JSON.parse(lw(['status', '--json'])); return j.active ? String(j.started) : '' } catch { return null } }
+  const isOurs = () => { const now = session(); try { return !!now && fs.readFileSync(ours, 'utf8') === now } catch { return false } }
+  const now = session()
+  if (now === null) return false
+  if (!now) {
+    try { lw(['start', '--cmd', `! pgrep -qf '${HANDOFF_RUNNING}'`, '--battery', '10', '--max', '0', '-b']) } catch { return false }
+    fs.writeFileSync(ours, session() || '') // which session is ours: its start time
+    console.log('LidWake is on: you can close the lid. It stops when Handoff does, or at 10% battery.\n')
+  } else if (!isOurs()) return (lidAwakeState = true) // yours: yours to stop
+  process.on('exit', () => {
+    let others = []
+    try { others = execFileSync('pgrep', ['-f', HANDOFF_RUNNING], { encoding: 'utf8' }).split('\n').filter(p => p && Number(p) !== process.pid) } catch {}
+    if (others.length || !isOurs()) return
+    try { lw(['stop']) } catch {}
+    fs.rmSync(ours, { force: true })
+  })
+  // So Ctrl+C runs that too (host has its own handlers, which exit).
+  setImmediate(() => { for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) if (!process.listenerCount(sig)) process.on(sig, () => process.exit(128 + os.constants.signals[sig])) })
+  return (lidAwakeState = true)
 }
 
 if (cmd === 'start') {
@@ -71,7 +124,7 @@ if (cmd === 'start') {
       'Update it first: claude plugin marketplace update handoff && claude plugin update handoff@handoff')
     process.exit(1)
   }
-  const claudeArgs = ['--permission-mode', 'auto', ...MCP_ARGS, ...CHANNEL_ARGS, ...rest]
+  const claudeArgs = ['--permission-mode', 'auto', ...mcpArgs(), ...(screenOn() ? ['--allowedTools', ...SCREEN_TOOLS] : []), ...CHANNEL_ARGS, ...rest]
   console.log(`Starting Claude Code with Handoff as the chat "${name}". Ideas from your watch will show up here.\n` +
     'Claude Code will warn about development channels: choose "I am using this for local development".\n' +
     'It may also say "server:handoff · no MCP server configured with that name". That\'s expected: Handoff\'s\n' +
@@ -81,6 +134,7 @@ if (cmd === 'start') {
   // caffeinate keeps the Mac awake (so Claude can keep working) for as long as the session runs.
   // Tells this session's Handoff server that it's listening, so it (not other open sessions) takes the notes.
   const opts = { stdio: 'inherit', env: { ...process.env, CLAUDE_WATCH_NOTES_CHANNEL: '1', CLAUDE_WATCH_NOTES_NAME: name } }
+  stayAwake()
   if (process.platform === 'darwin') run('caffeinate', ['-i', 'claude', ...claudeArgs], opts)
   else run('claude', claudeArgs, opts)
   // The watch's Projects screen: this folder's git status while the chat is open, checked every
@@ -94,14 +148,16 @@ if (cmd === 'start') {
 } else if (cmd === 'pair') {
   // The watch shows a code to type here. With no code (pressing Return, or not at a terminal, like
   // the 1.0 /handoff:pair skill), show one to type on the watch instead, as Hand-Off 1.0 asks.
-  let code = rest.join('')
-  if (!code && process.stdin.isTTY) {
-    const rl = (await import('node:readline/promises')).createInterface({ input: process.stdin, output: process.stdout })
-    code = (await rl.question('Open Hand-Off on your watch and type the code it shows\n(or press Return if your watch asks you for a code): ')).trim()
-    rl.close()
-  }
+  // At a terminal with no code: list the watches on this network to pick from (Hand-Off 1.5 and
+  // later), or type the code (any version). Exit status 3 means Return was pressed: show a code.
+  const code = rest.join('')
   if (code) run(process.execPath, [SERVER, 'pair', code], { stdio: 'inherit' })
-  else pairShowingCode()
+  else if (!process.stdin.isTTY) pairShowingCode()
+  else {
+    const status = (await import('node:child_process')).spawnSync(process.execPath, [SERVER, 'pair', '--lobby'], { stdio: 'inherit' }).status
+    if (status === 3) pairShowingCode()
+    else process.exit(status ?? 1)
+  }
 } else if (cmd === 'unpair') {
   // Forgets the pairing key. Running chats and the host see it go (they watch the file) and stop
   // listening. Notes and their summaries stay; so do the cursors, which only apply to that pairing.
@@ -113,6 +169,10 @@ if (cmd === 'start') {
   }
 } else if (cmd === 'host') {
   host(path.resolve(rest[0] || process.cwd()))
+} else if (cmd === 'lab' && rest[0] === 'screen-control') { // the old name for `handoff extras install screen`
+  screenControl(rest[1], rest[2])
+} else if (cmd === 'extras') {
+  extrasCommand(...rest)
 } else if (cmd === 'mail') {
   mail(rest[0])
 } else if (cmd === 'relay') {
@@ -148,6 +208,9 @@ if (cmd === 'start') {
   handoff inbox             Print the notes that aren't done yet (/handoff:inbox runs it)
   handoff done <note_id> <summary> [--suggestion "next prompt"] [--image screenshot.jpg]
                             Mark a note done (and send a suggestion, screenshot or GIF to the watch)
+  handoff extras            Optional Mac extras so Claude can use your screen while you're
+                            away (screen control, Deskhand, a fake lock screen, LidWake):
+                            handoff extras install all
 `)
 }
 
@@ -276,6 +339,8 @@ function host(root) {
       !d.name.startsWith('.') && d.name !== 'node_modules')
     .map(d => d.name).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).slice(0, 60)
   const hostName = os.hostname().replace(/\.local$/, '')
+  stayAwake()
+  lidAwake()
   const projects = () => subfolders(root)
   const dryRun = !!process.env.CLAUDE_WATCH_NOTES_HOST_DRYRUN // tests: don't open Terminal windows
   const q = v => `'${String(v).replace(/'/g, `'\\''`)}'` // single-quoted for the shell
@@ -287,7 +352,8 @@ function host(root) {
   let chats = {}
   try { chats = JSON.parse(fs.readFileSync(CHATS, 'utf8')) } catch {}
   const saveChats = () => writeAtomic(CHATS, JSON.stringify(chats, null, 2))
-  const recentChats = () => Object.keys(chats).filter(n => Date.now() - Date.parse(chats[n].lastUsed) < 3 * 86_400_000)
+  // Every chat until you delete it from the watch, newest first (a cap only keeps the message small).
+  const recentChats = () => Object.keys(chats).sort((a, b) => Date.parse(chats[b].lastUsed || 0) - Date.parse(chats[a].lastUsed || 0)).slice(0, 50)
   const logFile = name => path.join(LOGS,
     `${name.replace(/[^\w.-]+/g, '-').slice(0, 30)}-${crypto.createHash('sha1').update(name).digest('hex').slice(0, 8)}.log`)
   const logTo = (name, text) => fs.appendFileSync(logFile(name), text)
@@ -357,6 +423,7 @@ function host(root) {
     if (req.ls !== undefined) listFolder(req)
     else if (req.open !== undefined) openChat(req)
     else if (req.stop !== undefined) stopChat(String(req.stop))
+    else if (req.delete !== undefined) deleteChat(String(req.delete))
     else startChat(req)
   })
 
@@ -451,6 +518,16 @@ function host(root) {
     return c
   }
 
+  // Delete chat on the watch: stops what it's running and forgets it. Its folder and log stay.
+  function deleteChat(name) {
+    if (!chats[name]) return console.log(`Skipped a request to delete a chat this host doesn't have.`)
+    if (running.has(name)) stopChat(name)
+    delete chats[name]
+    saveChats()
+    announce()
+    console.log(`Deleted chat "${name}" from the watch (its folder is still there)`)
+  }
+
   // Stop on the watch: interrupt the chat's running note, as Ctrl+C would. The note is kept as stopped.
   function stopChat(name) {
     const child = running.get(name)
@@ -480,13 +557,14 @@ function host(root) {
     const prompt = `${n.text}\n\n---\nThis is a note the user jotted on their Apple Watch (note_id=${n.id}). They are away and ` +
       'will not see or answer questions: do it autonomously in this project, making reasonable assumptions. If an action is ' +
       `blocked by the permission system, skip it and mention it. When finished, call watch_note_done with note_id ${n.id}, ` +
-      'a short summary, optionally a suggestion (the next prompt they would likely send) and, if it changed something ' +
-      'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of an MP4 clip if it moves (ffmpeg -y -t 6 -i VIDEO -vf "fps=30,scale=480:-2" -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 64k -movflags +faststart CLIP.mp4; if the watch can\'t play videos, watch_note_done says to send a GIF instead). ' +
+      'a short summary, optionally a suggestion (the next prompt they would likely send)' +
+      (n.shots === false ? ' (they turned screenshots off on the watch: no image). ' : ' and, if it changed something ') +
+      (n.shots === false ? '' : 'they can look at, image: the path of a small screenshot of it (PNG or JPEG under 300 KB), or of an MP4 clip if it moves (ffmpeg -y -t 6 -i VIDEO -vf "fps=30,scale=480:-2" -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 64k -movflags +faststart CLIP.mp4; if the watch can\'t play videos, watch_note_done says to send a GIF instead). ') +
       'If you reach a real choice only they can make, you may ask once with watch_ask (they tap an answer on the watch).'
     const args = ['-p', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
-      ...MCP_ARGS, '--allowedTools', 'mcp__handoff__watch_note_done', 'mcp__handoff__watch_ask',
+      ...mcpArgs(n), '--allowedTools', 'mcp__handoff__watch_note_done', 'mcp__handoff__watch_ask', ...(screenOn() && n.screen !== false ? SCREEN_TOOLS : []),
       ...(chat.started ? ['--resume', chat.session] : ['--session-id', chat.session])]
-    const env = { ...process.env, CLAUDE_WATCH_NOTES_NAME: n.to }
+    const env = { ...process.env, CLAUDE_WATCH_NOTES_NAME: n.to, HANDOFF_NOTE: n.id } // the screen extra checks this note allows it
     delete env.CLAUDE_WATCH_NOTES_CHANNEL // its plugin server must not claim other notes
     let result = '', failed = null, sawSession = false, stopped = false
     await new Promise(resolve => {
@@ -833,4 +911,271 @@ async function relay(sub) {
   console.log(`\nYour relay works: ${url}\n` +
     'Now move your watch to it: on the watch, Settings, Unpair. Then open Hand-Off and run: handoff pair CODE\n' +
     '(Pairing starts on ntfy.sh, so it needs ntfy.sh to let one message through. After that, nothing uses ntfy.sh.)')
+}
+
+// The screen-control extra (extras/screen): lets the chats this command opens see the screen and use
+// the mouse and keyboard. Off unless you turn it on; deliberately left out of `handoff help`.
+function screenControl(sub, arg) {
+  const ctl = path.join(DIR, 'bin', 'screenctl')
+  const save = (on, more = {}) => { fs.mkdirSync(DIR, { recursive: true, mode: 0o700 }); writeAtomic(EXTRAS, JSON.stringify({ ...extras(), screen: on, ...more }, null, 2)) }
+  const check = () => { try { return execFileSync(ctl, ['check'], { encoding: 'utf8' }) } catch { return '' } }
+  if (sub === 'on') {
+    if (process.platform !== 'darwin') { console.error('Screen control only works on a Mac.'); process.exit(1) }
+    fs.mkdirSync(path.dirname(ctl), { recursive: true, mode: 0o700 })
+    console.log('Building screenctl (the mouse and keyboard)...')
+    try {
+      execFileSync('swiftc', ['-O', fileURLToPath(new URL('../extras/screen/screenctl.swift', import.meta.url)), '-o', ctl], { stdio: 'inherit' })
+    } catch { console.error("Couldn't build it. It needs Apple's command line tools: xcode-select --install"); process.exit(1) }
+    save(true)
+    const c = check()
+    console.log('\nScreen control is on. New chats from `handoff start` and `handoff host` can see your screen and\n' +
+      'use the mouse and keyboard while you are away. Chats already running need a restart.\n')
+    if (!c.includes('accessibility:yes') || !c.includes('screen:yes'))
+      console.log('macOS needs your OK first. In System Settings > Privacy & Security, allow the app you run\n' +
+        'handoff in (Terminal, iTerm...) under both Accessibility and Screen & System Audio Recording,\n' +
+        'then quit and reopen that app. Check with: handoff lab screen-control status')
+    console.log('Turn it off with: handoff lab screen-control off')
+  } else if (sub === 'off') {
+    save(false)
+    fs.rmSync(ctl, { force: true })
+    console.log('Screen control is off. Chats already running keep it until they restart.')
+  } else if (sub === 'awake' && (arg === 'on' || arg === 'off')) {
+    if (!screenOn()) { console.error('Turn screen control on first: handoff lab screen-control on'); process.exit(1) }
+    save(true, { awake: arg === 'on' })
+    console.log(arg === 'on'
+      ? "While `handoff start` or `handoff host` runs, your display won't sleep, so the Mac won't lock itself\n" +
+        'and screen control keeps working. Anyone at the Mac can use it then too. Locking it yourself\n' +
+        '(Ctrl+Cmd+Q) still locks it. Restart host and chats to start this.'
+      : 'The display can sleep and lock again (after host and chats restart).')
+  } else if (sub === 'status') {
+    const c = check()
+    console.log(`Screen control is ${screenOn() ? 'on' : 'off'}.` + (c ? `\n  Accessibility (mouse, keyboard): ${c.includes('accessibility:yes') ? 'allowed' : 'not allowed'}\n  Screen Recording (screenshots): ${c.includes('screen:yes') ? 'allowed' : 'not allowed'}\n  Screen locked now: ${c.includes('locked:yes') ? 'yes' : 'no'}` : '') +
+      `\n  Keep the display awake: ${extras().awake === true ? 'on' : 'off'} (handoff lab screen-control awake on|off)`)
+  } else {
+    console.error('Usage: handoff lab screen-control on|off|status|awake on|off')
+    process.exit(1)
+  }
+}
+
+// `handoff extras`: optional Mac extras in extras/, so a chat can use the screen while you're away, wired
+// up with one command. Each one says what macOS still needs from you (Accessibility switches can't be
+// flipped for you). The Claude Code settings it touches (~/.claude/settings.json) are backed up first.
+//   screen     Handoff's own screen tools (mcp__screen__*), for chats Handoff opens
+//   deskhand   Karam Lamba's Deskhand as the `computer` tool, in every Claude Code chat
+//   cover      a fake lock screen: the Mac never really locks, so Claude can still use the screen
+//   lidwake    LidWake (github.com/aaryanbindage/Lidwake): keeps the Mac running with the lid closed
+function extrasCommand(sub, name, ...args) {
+  const NAMES = ['screen', 'deskhand', 'cover', 'lidwake']
+  const src = file => fileURLToPath(new URL(`../extras/${file}`, import.meta.url))
+  const uid = process.getuid?.()
+  const COVER = path.join(DIR, 'bin', 'cover')
+  const COVER_LABEL = 'com.handoff.cover'
+  const COVER_PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', `${COVER_LABEL}.plist`)
+  const LIFT = `"${COVER}" lift 120`
+  const LIFT_TOOLS = 'mcp__computer__computer|mcp__screen__.*'
+  const LIDWAKE = '/usr/local/bin/lidwake'
+  const saveExtras = more => {
+    fs.mkdirSync(DIR, { recursive: true, mode: 0o700 })
+    const next = { ...extras(), ...more }
+    for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
+    writeAtomic(EXTRAS, JSON.stringify(next, null, 2))
+  }
+  const sh = (file, argv, opts = {}) => { try { return execFileSync(file, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts }) } catch { return null } }
+  const mac = () => { if (process.platform !== 'darwin') { console.error('The extras only work on a Mac.'); process.exit(1) } }
+
+  // ~/.claude/settings.json: the permission and hook these extras need, added and taken away again.
+  const SETTINGS = path.join(os.homedir(), '.claude', 'settings.json')
+  const settings = change => {
+    let s = {}
+    try { s = JSON.parse(fs.readFileSync(SETTINGS, 'utf8')) } catch (e) { if (e.code !== 'ENOENT') { console.error(`Couldn't read ${SETTINGS}: ${e.message}`); process.exit(1) } }
+    const before = JSON.stringify(s)
+    change(s)
+    if (JSON.stringify(s) === before) return
+    fs.mkdirSync(path.dirname(SETTINGS), { recursive: true })
+    if (fs.existsSync(SETTINGS) && !fs.existsSync(`${SETTINGS}.handoff-backup`)) fs.copyFileSync(SETTINGS, `${SETTINGS}.handoff-backup`)
+    writeAtomic(SETTINGS, JSON.stringify(s, null, 2) + '\n')
+  }
+  const allow = (perm, on) => settings(s => {
+    const list = (s.permissions ??= {}).allow ??= []
+    const i = list.indexOf(perm)
+    if (on && i < 0) list.push(perm)
+    if (!on && i >= 0) list.splice(i, 1)
+  })
+  const liftHook = on => settings(s => {
+    const pre = ((s.hooks ??= {}).PreToolUse ??= [])
+    const ours = h => h.hooks?.some(x => x.command === LIFT)
+    if (on && !pre.some(ours)) pre.push({ matcher: LIFT_TOOLS, hooks: [{ type: 'command', command: LIFT }] })
+    if (!on) s.hooks.PreToolUse = pre.filter(h => !ours(h))
+    if (!s.hooks.PreToolUse.length) delete s.hooks.PreToolUse
+    if (!Object.keys(s.hooks).length) delete s.hooks
+  })
+  const askForAccessibility = what => {
+    console.log(`\nmacOS needs your OK: System Settings > Privacy & Security > Accessibility is opening, with ${what}\n` +
+      'in a Finder window. Drag it into the list and switch it on (if it is already there, remove it with − first:\n' +
+      'a new build needs a new OK).')
+    sh('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'])
+  }
+
+  const deskhandApp = () => ['/Applications/Deskhand.app', path.join(os.homedir(), 'Applications', 'Deskhand.app')].find(a => fs.existsSync(a))
+  const coverRunning = () => sh('launchctl', ['print', `gui/${uid}/${COVER_LABEL}`])?.includes('state = running') ?? false
+  const deskhandOn = () => (sh('claude', ['mcp', 'get', 'computer']) ?? '').includes('Deskhand')
+
+  const install = {
+    screen() { screenControl('on') },
+    deskhand() {
+      let app = deskhandApp()
+      if (!app) {
+        app = path.join(os.homedir(), 'Applications', 'Deskhand.app')
+        fs.mkdirSync(path.dirname(app), { recursive: true })
+        execFileSync('ditto', ['-x', '-k', src('deskhand/Deskhand.zip'), path.dirname(app)])
+        fs.rmSync(path.join(path.dirname(app), '__MACOSX'), { recursive: true, force: true })
+        saveExtras({ deskhandApp: app })
+        console.log(`Put Deskhand in ${app}.`)
+      }
+      const bin = path.join(app, 'Contents', 'MacOS', 'Deskhand')
+      if (!deskhandOn()) {
+        sh('claude', ['mcp', 'remove', '--scope', 'user', 'computer'])
+        if (sh('claude', ['mcp', 'add', '--scope', 'user', 'computer', '--', bin, '--mcp']) === null) {
+          console.error("Couldn't add it to Claude Code. Is `claude` installed? Then: handoff extras install deskhand"); process.exit(1)
+        }
+      }
+      allow('mcp__computer__computer', true)
+      console.log('Deskhand is Claude\'s `computer` tool in every Claude Code chat (new chats; restart running ones).\n' +
+        'macOS asks first: allow the app you run Claude in (Terminal, iTerm...) under Accessibility and\n' +
+        'Screen & System Audio Recording in System Settings > Privacy & Security.')
+    },
+    cover() {
+      mac()
+      fs.mkdirSync(path.dirname(COVER), { recursive: true, mode: 0o700 })
+      fs.mkdirSync(path.join(DIR, 'cover'), { recursive: true, mode: 0o700 })
+      console.log('Building the fake lock screen...')
+      try {
+        execFileSync('clang', ['-fobjc-arc', '-O2', ...['AppKit', 'CoreGraphics', 'IOKit', 'OpenDirectory', 'QuartzCore'].flatMap(f => ['-framework', f]),
+          src('cover/cover.m'), '-o', COVER], { stdio: 'inherit' })
+      } catch { console.error("Couldn't build it. It needs Apple's command line tools: xcode-select --install"); process.exit(1) }
+      fs.mkdirSync(path.dirname(COVER_PLIST), { recursive: true })
+      fs.writeFileSync(COVER_PLIST, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${COVER_LABEL}</string>
+  <key>ProgramArguments</key><array><string>${COVER}</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardErrorPath</key><string>${path.join(DIR, 'cover', 'cover.log')}</string>
+</dict></plist>
+`)
+      sh('launchctl', ['bootout', `gui/${uid}`, COVER_PLIST])
+      execFileSync('launchctl', ['bootstrap', `gui/${uid}`, COVER_PLIST])
+      liftHook(true)
+      console.log('\nThe fake lock screen is on. Your Mac no longer locks for real: when the lid closes, or after 5 minutes\n' +
+        'with nobody using it and nothing playing, this covers the screen instead. Your Mac password opens it\n' +
+        '(macOS checks it; it is never stored). Claude lifts it while it uses the screen.\n' +
+        'It is weaker than the real lock, on purpose. Two ways past it if it ever breaks:\n' +
+        '  Ctrl+Option+Cmd+Shift+U, or Force Quit (Cmd+Option+Esc)\n' +
+        'Try it: handoff extras cover test    Picture: handoff extras cover wallpaper desktop|<image>|none')
+      askForAccessibility('cover (so it can take the keyboard)')
+      sh('open', ['-R', COVER])
+      console.log('Then: handoff extras cover restart')
+    },
+    lidwake() {
+      mac()
+      if (fs.existsSync(LIDWAKE)) {
+        saveExtras({ lidwake: true })
+        console.log(`LidWake is already installed (${LIDWAKE}). Handoff now starts it while a chat or host runs on battery-powered\n` +
+          'MacBooks, until Handoff stops or the battery is at 10%.')
+        return
+      }
+      // install.sh builds next to itself, and the package folder may not be writable: run it from a copy.
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lidwake-'))
+      fs.cpSync(src('lidwake'), tmp, { recursive: true })
+      try { execFileSync('bash', [path.join(tmp, 'install.sh')], { stdio: 'inherit', cwd: tmp }) }
+      catch { console.error('LidWake did not install (see above).'); process.exit(1) }
+      finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+      sh(LIDWAKE, ['claude-hook', '--install'], { stdio: 'inherit' })
+      saveExtras({ lidwake: true })
+      console.log('\nLidWake keeps the Mac running with the lid closed. Handoff starts it while a chat or host runs, until\n' +
+        'Handoff stops or the battery is at 10%. While it runs, Sleep is greyed out in the Apple menu.')
+    },
+  }
+  const remove = {
+    screen() { screenControl('off') },
+    deskhand() {
+      if (deskhandOn()) sh('claude', ['mcp', 'remove', '--scope', 'user', 'computer'])
+      allow('mcp__computer__computer', false)
+      const ours = extras().deskhandApp
+      if (ours) { fs.rmSync(ours, { recursive: true, force: true }); saveExtras({ deskhandApp: undefined }) }
+      console.log('Deskhand is no longer a Claude Code tool.' + (ours ? '' : ' The app itself is still where you put it.'))
+    },
+    cover() {
+      sh('launchctl', ['bootout', `gui/${uid}`, COVER_PLIST])
+      fs.rmSync(COVER_PLIST, { force: true })
+      fs.rmSync(COVER, { force: true })
+      liftHook(false)
+      console.log('The fake lock screen is off; your Mac locks for real again. You can take cover out of\n' +
+        'System Settings > Privacy & Security > Accessibility.')
+    },
+    lidwake() {
+      mac()
+      saveExtras({ lidwake: undefined })
+      if (!fs.existsSync(LIDWAKE)) { console.log('LidWake is not installed.'); return }
+      execFileSync('bash', [src('lidwake/uninstall.sh')], { stdio: 'inherit' })
+    },
+  }
+
+  const pick = n => {
+    const list = n === 'all' ? NAMES : [n]
+    if (!list.every(x => NAMES.includes(x))) { console.error(`Which one? ${NAMES.join(', ')} or all`); process.exit(1) }
+    return list
+  }
+  if (sub === 'install' || sub === 'remove') {
+    if (!name) { console.error(`Usage: handoff extras ${sub} ${NAMES.join('|')}|all`); process.exit(1) }
+    for (const n of pick(name)) {
+      if (name === 'all') console.log(`\n== ${n} ==`)
+      ;(sub === 'install' ? install : remove)[n]()
+    }
+  } else if (sub === 'cover' && name === 'test') {
+    if (!fs.existsSync(COVER)) { console.error('Install it first: handoff extras install cover'); process.exit(1) }
+    console.log('Showing the fake lock screen for up to 60 seconds. Your password, Ctrl+Option+Cmd+Shift+U\n' +
+      'or Force Quit (Cmd+Option+Esc) closes it.')
+    run(COVER, ['test'], { stdio: 'inherit' })
+  } else if (sub === 'cover' && name === 'restart') {
+    if (!fs.existsSync(COVER_PLIST)) { console.error('Install it first: handoff extras install cover'); process.exit(1) }
+    sh('launchctl', ['kickstart', '-k', `gui/${uid}/${COVER_LABEL}`])
+    console.log(coverRunning() ? 'The fake lock screen restarted.' : `It didn't start; see ${path.join(DIR, 'cover', 'cover.log')}`)
+  } else if (sub === 'cover' && name === 'wallpaper' && args[0]) {
+    const choice = args[0]
+    if (choice === 'none' || choice === 'desktop') saveExtras({ coverWallpaper: choice === 'none' ? undefined : 'desktop' })
+    else {
+      const file = path.resolve(choice)
+      const ext = path.extname(file).toLowerCase()
+      if (!fs.existsSync(file) || !['.png', '.jpg', '.jpeg', '.heic', '.tif', '.tiff', '.gif', '.webp'].includes(ext)) {
+        console.error('Give it a picture (PNG, JPEG, HEIC...), or desktop for your desktop picture, or none.'); process.exit(1)
+      }
+      // A copy, so it keeps working if you move or delete the original.
+      const copy = path.join(DIR, 'cover', `wallpaper${ext}`)
+      fs.mkdirSync(path.dirname(copy), { recursive: true, mode: 0o700 })
+      for (const old of fs.readdirSync(path.dirname(copy))) if (old.startsWith('wallpaper.')) fs.rmSync(path.join(path.dirname(copy), old))
+      fs.copyFileSync(file, copy)
+      saveExtras({ coverWallpaper: copy })
+    }
+    console.log(choice === 'none' ? 'The fake lock screen is plain dark grey again.'
+      : `The fake lock screen shows ${choice === 'desktop' ? 'your desktop picture' : path.basename(choice)} from the next time it covers.`)
+  } else if (!sub || sub === 'status') {
+    const e = extras()
+    const yes = b => (b ? 'on ' : 'off')
+    console.log(`Handoff extras (handoff extras install|remove NAME, or all):
+  screen     ${yes(e.screen === true)}  Handoff's screen tools for the chats it opens
+  deskhand   ${yes(deskhandOn())}  Deskhand by Karam Lamba as Claude's computer tool
+  cover      ${yes(fs.existsSync(COVER_PLIST))}  fake lock screen${fs.existsSync(COVER_PLIST) ? ` (${coverRunning() ? 'running' : 'not running'}; picture: ${e.coverWallpaper ? (e.coverWallpaper === 'desktop' ? 'desktop' : path.basename(e.coverWallpaper)) : 'none'})` : ''}
+  lidwake    ${yes(fs.existsSync(LIDWAKE) && e.lidwake === true)}  LidWake (aaryanbindage): runs with the lid closed while Handoff does (to 10% battery)
+
+  handoff extras cover test | restart | wallpaper desktop|<image>|none`)
+  } else {
+    console.error(`Usage: handoff extras [status]
+       handoff extras install|remove ${NAMES.join('|')}|all
+       handoff extras cover test|restart|wallpaper desktop|<image>|none`)
+    process.exit(1)
+  }
 }

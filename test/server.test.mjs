@@ -293,6 +293,18 @@ describe('delivery', () => {
     assert.ok(Buffer.from(openBox(await (await fetch(ev.attachment.url)).text(), cfg.key).i, 'base64').equals(mp4))
   })
 
+  test('watch_note_done sends no image when the note came with Settings → Screenshots off', async () => {
+    const n = { ...note('no shots'), mp4: '1', anySize: '1', shots: '0' }
+    await post(cfg.topicURL, seal(n, cfg.key))
+    await s.waitFor(pushFor(n.id))
+    const file = path.join(dir, 'off.png')
+    fs.writeFileSync(file, Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(100)]))
+    const before = (await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').filter(Boolean).length
+    const r = await s.request('tools/call', { name: 'watch_note_done', arguments: { note_id: n.id, summary: 'ok', image: file } })
+    assert.match(r.result.content[0].text, /Marked .* done\. Screenshots are off on the watch/)
+    assert.equal((await (await fetch(`${cfg.topicURL}-i/json?poll=1&since=all`)).text()).trim().split('\n').filter(Boolean).length, before)
+  })
+
   test('watch_note_done sends a clip over 4 MB when the watch takes any size', async () => {
     const n = { ...note('big'), mp4: '1', anySize: '1' }
     await post(cfg.topicURL, seal(n, cfg.key))
@@ -403,6 +415,25 @@ describe('approvals from the watch (permission relay)', () => {
     assert.match(r.result.content[0].text, /No answer from the watch.*Decide yourself/)
     const bad = await s.request('tools/call', { name: 'watch_ask', arguments: { question: 'Which?', options: ['A'] } })
     assert.equal(bad.result.isError, true)
+    await s.stop()
+  })
+
+  test('Open on computer brings this chat\'s Terminal window to the front', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const calls = path.join(dir, 'osascript.log'), fake = path.join(dir, 'osascript')
+    fs.writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$2" >> '${calls}'\necho Terminal\n`, { mode: 0o755 })
+    const s = startServer(dir, { env: { CLAUDE_WATCH_NOTES_NAME: 'website', CLAUDE_WATCH_NOTES_OSASCRIPT: fake, CLAUDE_WATCH_NOTES_TTY: '/dev/ttys042' } })
+    await s.ready
+    await connected(`${cfg.topic}-v`)
+    const v = `${cfg.topicURL}-v`
+    await post(v, seal({ open: 'other chat', ts: new Date().toISOString() }, cfg.key)) // another chat's
+    await post(v, seal({ open: 'website', ts: new Date().toISOString() }, cfg.key))
+    const end = Date.now() + 5000
+    while (!fs.existsSync(calls) && Date.now() < end) await sleep(50)
+    await sleep(300)
+    const script = fs.readFileSync(calls, 'utf8')
+    assert.equal(script.match(/tell application "Terminal"/g).length, 1) // once: only for this chat
+    assert.match(script, /tty of t is "\/dev\/ttys042"/)
     await s.stop()
   })
 
@@ -738,6 +769,26 @@ describe('sessions, restarts and the network', () => {
 
 describe('host command (new chats from the watch)', () => {
   const CLI = new URL('../cli/handoff.mjs', import.meta.url).pathname
+  test('lists every chat it has, however old, newest first', async () => {
+    const dir = tmpDir(); const cfg = pairDir(dir)
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-root-')))
+    const chats = {}
+    for (let i = 0; i < 6; i++) {
+      fs.mkdirSync(path.join(root, `p${i}`))
+      chats[`chat ${i}`] = { dir: path.join(root, `p${i}`), session: crypto.randomUUID(), lastUsed: new Date(Date.now() - i * 5 * 86_400_000).toISOString() }
+    }
+    fs.writeFileSync(path.join(dir, 'host-chats.json'), JSON.stringify(chats))
+    const h = spawn(process.execPath, [CLI, 'host', root], {
+      env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_HOST_DRYRUN: '1' },
+    })
+    spawned.add(h)
+    const announced = async () => (await (await fetch(`${cfg.topicURL}-c/json?poll=1&since=all`)).text())
+      .trim().split('\n').filter(Boolean).map(l => openBox(JSON.parse(l).message, cfg.key)).filter(m => m.host)
+    const end = Date.now() + 5000
+    while (!(await announced()).length && Date.now() < end) await sleep(50)
+    assert.deepEqual((await announced())[0].chats, ['chat 0', 'chat 1', 'chat 2', 'chat 3', 'chat 4', 'chat 5'])
+    h.kill()
+  })
   test('lists projects, opens only listed ones, ignores stale/forged requests, quotes names safely', async () => {
     const dir = tmpDir(); const cfg = pairDir(dir)
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwn-root-')))
@@ -867,6 +918,7 @@ describe('host command (new chats from the watch)', () => {
     assert.deepEqual(b.args.slice(b.args.indexOf('--resume'), b.args.indexOf('--resume') + 2), ['--resume', session]) // same conversation
     assert.ok(a.prompt.startsWith('-rf make a todo app') && a.prompt.includes(`note_id=${first.id}`)) // prompt on stdin, not argv
     assert.ok(!a.args.some(x => x.includes('todo')))
+    assert.ok(!a.args.some(x => x.includes('screen'))) // the screen-control extra is off unless turned on
     assert.equal(saved(first.id).summary, 'Did: -rf make a todo app') // Claude didn't call watch_note_done
     assert.equal(ran().length, 2) // the note for another chat isn't run here
     assert.equal(saved(other.id).status, 'new')
@@ -890,11 +942,14 @@ describe('host command (new chats from the watch)', () => {
     h = spawn(process.execPath, [CLI, 'host', root], { env })
     spawned.add(h)
     await connected(cfg.topic)
-    const later = note('one more thing', { to: 'web' })
+    fs.writeFileSync(path.join(dir, 'extras.json'), JSON.stringify({ screen: true })) // `handoff lab screen-control on`
+    const later = note('one more thing', { to: 'web', screen: '1' }) // Settings → Computer use on
     await post(cfg.topicURL, seal(later, cfg.key))
     await until(() => saved(later.id).status === 'done', 'note after restart')
     const last = ran().at(-1)
     assert.equal(last.args[last.args.indexOf('--resume') + 1], session)
+    assert.ok(JSON.parse(last.args[last.args.indexOf('--mcp-config') + 1]).mcpServers.screen.args[0].endsWith('extras/screen/server.mjs'))
+    assert.ok(last.args.includes('mcp__screen__screen_click'))
     assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'host-chats.json'), 'utf8')).web.session, session) // a replayed request didn't start it over
     assert.equal(ran().filter(r => r.prompt.includes(first.id)).length, 1) // nothing re-run after the restart
 
@@ -907,6 +962,10 @@ describe('host command (new chats from the watch)', () => {
     await until(() => saved(slow.id).status === 'stopped', 'stopped')
     assert.equal(saved(slow.id).summary, 'Stopped from the watch.')
     assert.ok(ran().at(-1).args.includes('mcp__handoff__watch_ask'))
+    // Delete chat on the watch: forgotten, its folder kept.
+    await post(`${cfg.topicURL}-n`, seal({ ts: new Date().toISOString(), delete: 'web' }, cfg.key))
+    await until(() => !JSON.parse(fs.readFileSync(path.join(dir, 'host-chats.json'), 'utf8')).web, 'chat deleted')
+    assert.ok(fs.existsSync(path.join(root, 'website')))
     h.kill('SIGTERM'); await new Promise(r => h.on('exit', r))
   })
 })
@@ -1318,5 +1377,108 @@ describe('pair --nearby (experimental: no code, on the same network)', () => {
     const r = await watch(8782, 'n')
     assert.equal(r.ack, null)
     assert.equal(r.config, null)
+  })
+})
+
+describe('screen-control extra (extras/screen)', () => {
+  test('lists its tools and asks for a screenshot before a click', async () => {
+    const dir = tmpDir()
+    const ctl = path.join(dir, 'screenctl'), calls = path.join(dir, 'calls')
+    // Stands in for screenctl.
+    fs.writeFileSync(ctl, `#!/bin/sh\n[ "$1" = locked ] && { [ -e '${dir}/locked' ]; exit $?; }\necho "$@" >> '${calls}'\n[ "$1" = size ] && echo 2880 1800\nexit 0\n`, { mode: 0o755 })
+    fs.mkdirSync(path.join(dir, 'notes'))
+    const noteFor = (id, more) => fs.writeFileSync(path.join(dir, 'notes', `${id}.json`), JSON.stringify({ id, text: 'x', ...more }))
+    noteFor('allowed', {}); noteFor('not-allowed', { screen: false }) // apps before 1.5 send no `screen`: allowed
+    const srv = spawn(process.execPath, [new URL('../extras/screen/server.mjs', import.meta.url).pathname], { env: { ...process.env, HANDOFF_SCREENCTL: ctl, CLAUDE_WATCH_NOTES_DIR: dir, HANDOFF_NOTE: 'allowed' } })
+    spawned.add(srv)
+    let buf = ''
+    const waiting = new Map()
+    srv.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); waiting.get(m.id)?.(m) } })
+    let n = 0
+    const ask = (method, params) => new Promise(r => { const id = ++n; waiting.set(id, r); srv.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n') })
+    await ask('initialize', { protocolVersion: '2025-06-18' })
+    const { result } = await ask('tools/list')
+    assert.deepEqual(result.tools.map(t => t.name), ['screen_screenshot', 'screen_click', 'screen_move', 'screen_drag', 'screen_scroll', 'screen_type', 'screen_key', 'screen_batch'])
+    const early = await ask('tools/call', { name: 'screen_click', arguments: { x: 10, y: 10 } })
+    assert.equal(early.result.isError, true); assert.match(early.result.content[0].text, /screenshot first/)
+    // A batch runs its steps in order and stops at the first that fails.
+    const batch = await ask('tools/call', { name: 'screen_batch', arguments: { screenshot: false, actions: [
+      { action: 'key', key: 'cmd+space' }, { action: 'type', text: 'Notes' }, { action: 'wait', ms: 10 }, { action: 'key', key: 'return' }] } })
+    assert.equal(batch.result.content[0].text, 'Ran 4 actions.')
+    const stopped = await ask('tools/call', { name: 'screen_batch', arguments: { screenshot: false, actions: [{ action: 'key', key: 'escape' }, { action: 'click', x: 1, y: 1 }, { action: 'type', text: 'never' }] } })
+    assert.equal(stopped.result.isError, true); assert.match(stopped.result.content[0].text, /Step 2 \(click\) failed/)
+    assert.deepEqual(fs.readFileSync(calls, 'utf8').trim().split('\n'), ['key cmd+space', 'type Notes', 'key return', 'key escape'])
+    // A locked Mac: nothing runs, and it says why.
+    fs.writeFileSync(path.join(dir, 'locked'), '')
+    const locked = await ask('tools/call', { name: 'screen_key', arguments: { key: 'escape' } })
+    assert.equal(locked.result.isError, true); assert.match(locked.result.content[0].text, /locked/)
+    assert.equal(fs.readFileSync(calls, 'utf8').trim().split('\n').length, 4)
+    fs.rmSync(path.join(dir, 'locked'))
+    srv.kill()
+    // A note sent with Settings → Computer use off: every tool refuses.
+    const off = spawn(process.execPath, [new URL('../extras/screen/server.mjs', import.meta.url).pathname], { env: { ...process.env, HANDOFF_SCREENCTL: ctl, CLAUDE_WATCH_NOTES_DIR: dir, HANDOFF_NOTE: 'not-allowed' } })
+    spawned.add(off)
+    const r = await new Promise(resolve => {
+      off.stdout.on('data', d => resolve(JSON.parse(String(d).split('\n')[0])))
+      off.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'screen_key', arguments: { key: 'escape' } } }) + '\n')
+    })
+    assert.equal(r.result.isError, true); assert.match(r.result.content[0].text, /Computer use is off/)
+    off.kill()
+  })
+})
+
+describe('pair by picking the watch (handoff pair lists the watches on this network)', () => {
+  const lobbyFor = ip => `${mock.url}/cwp-${Buffer.from(crypto.hkdfSync('sha256', ip, 'handoff-lobby', 'topic', 16)).toString('hex')}`
+  const lobbyMessages = async url => (await (await fetch(`${url}/json?poll=1&since=all`)).text()).trim().split('\n').filter(Boolean)
+    .map(l => { try { return JSON.parse(JSON.parse(l).message) } catch { return {} } })
+  function mac(dir, ip) {
+    const p = spawn(process.execPath, [SERVER, 'pair', '--lobby'], { env: { ...process.env, CLAUDE_WATCH_NOTES_DIR: dir, CLAUDE_WATCH_NOTES_RELAY: mock.url, CLAUDE_WATCH_NOTES_LOBBY_IP: ip } })
+    spawned.add(p)
+    p.out = ''
+    p.stdout.on('data', d => { p.out += d })
+    p.until = async (re, ms = 8000) => { const stop = Date.now() + ms; while (!re.test(p.out)) { if (Date.now() > stop) throw new Error(`timed out waiting for ${re}:\n${p.out}`); await sleep(50) } }
+    return p
+  }
+
+  test('lists a watch saying hello, you pick it, the watch approves, and both are paired', async () => {
+    const dir = tmpDir(), ip = `203.0.113.${crypto.randomInt(1, 250)}`, lobby = lobbyFor(ip)
+    // A pretend watch in the lobby, as PairView does.
+    const id = crypto.randomBytes(8).toString('hex')
+    const me = crypto.generateKeyPairSync('x25519')
+    const myPub = Buffer.from(me.publicKey.export({ format: 'jwk' }).x, 'base64url')
+    await post(lobby, JSON.stringify({ hello: id, name: 'Apple Watch 7F3A', pub: myPub.toString('base64') }))
+    const m = mac(dir, ip)
+    await m.until(/1\. Apple Watch 7F3A/)
+    m.stdin.write('1\n')
+    let pick
+    for (let i = 0; i < 100 && !pick; i++) { pick = (await lobbyMessages(lobby)).find(x => x.pick === id); if (!pick) await sleep(50) }
+    const macPub = Buffer.from(pick.pub, 'base64')
+    const shared = crypto.diffieHellman({ privateKey: me.privateKey, publicKey: crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: macPub.toString('base64url') }, format: 'jwk' }) })
+    const derive = (info, n) => Buffer.from(crypto.hkdfSync('sha256', shared, 'handoff-lobby', Buffer.concat([Buffer.from(info), myPub, macPub]), n))
+    const number = String(derive('sas', 4).readUInt32BE() % 1_000_000).padStart(6, '0')
+    await m.until(new RegExp(`shows  ${number.slice(0, 3)} ${number.slice(3)} `)) // the same number on both
+    const key = derive('key', 32), n = crypto.randomBytes(16).toString('hex')
+    const topic = `${mock.url}/cw-${crypto.randomBytes(16).toString('hex')}`
+    await post(lobby, JSON.stringify({ offer: id, box: seal({ topic, key: crypto.randomBytes(32).toString('base64'), n, moves: true }, key) }))
+    await m.until(/Paired/)
+    const ack = (await lobbyMessages(lobby)).find(x => x.ack === id)
+    assert.equal(openBox(ack.box, key).ack, n)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).topicURL, topic)
+  })
+
+  test('a watch saying no unpairs nothing; Return asks to show a code instead (exit 3)', async () => {
+    const dir = tmpDir(), ip = `198.51.100.${crypto.randomInt(1, 250)}`, lobby = lobbyFor(ip)
+    const id = crypto.randomBytes(8).toString('hex')
+    const me = crypto.generateKeyPairSync('x25519')
+    await post(lobby, JSON.stringify({ hello: id, name: 'Pixel Watch', pub: Buffer.from(me.publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64') }))
+    const m = mac(dir, ip)
+    await m.until(/1\. Pixel Watch/)
+    m.stdin.write('1\n')
+    await m.until(/approve on the watch/)
+    await post(lobby, JSON.stringify({ no: id }))
+    await m.until(/said no/)
+    assert.equal(fs.existsSync(path.join(dir, 'config.json')), false)
+    m.stdin.write('\n')
+    assert.equal(await new Promise(r => m.on('exit', r)), 3)
   })
 })

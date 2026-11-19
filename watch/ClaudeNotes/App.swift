@@ -343,6 +343,12 @@ final class Store {
         try? FileManager.default.removeItem(at: old)
         #if targetEnvironment(simulator)
         if defaults.bool(forKey: "resetPairing") { setPairing(nil) } // UI tests start unpaired
+        // watch/run-simulator.sh launches it with `-pairWith BASE64` (the Mac's own pairing, from
+        // ~/.claude-watch-notes/config.json), so the simulator talks to this Mac like the real watch.
+        if let b = defaults.string(forKey: "pairWith"), let d = Data(base64Encoded: b),
+           let p = try? JSONDecoder().decode(Pairing.self, from: d), p.topicURL != pairing?.topicURL || p.key != pairing?.key {
+            setPairing(p)
+        }
         #endif
     }
 
@@ -535,12 +541,28 @@ final class Store {
         return true
     }
 
-    /// Asks `handoff host` to open one of its chats on the Mac, as a normal Claude Code window in
-    /// Terminal that continues the conversation. Returns false if the request couldn't be sent.
-    func openOnComputer(_ name: String) async -> Bool {
-        guard hostedChats.contains(name), await askHost(["open": name]) else { return false }
+    /// Delete chat: asks `handoff host` to stop and forget one of its chats. Its folder stays on the Mac.
+    func deleteChat(_ name: String) async -> Bool {
+        guard hostedChats.contains(name), await askHost(["delete": name]) else { return false }
+        if target == name { target = nil }
         Haptic.play(.success)
         return true
+    }
+
+    /// Asks `handoff host` to open one of its chats on the Mac, as a normal Claude Code window in
+    /// Terminal that continues the conversation. Returns false if the request couldn't be sent.
+    /// A `handoff start` chat is already open in Terminal: its own server brings that window to the front.
+    func openOnComputer(_ name: String) async -> Bool {
+        guard let pairing else { return false }
+        var sent = false
+        if hostedChats.contains(name) {
+            sent = await askHost(["open": name])
+        } else if let body = try? JSONSerialization.data(withJSONObject: ["open": name, "ts": Date.now.ISO8601Format()]) {
+            sent = (try? await Ntfy.publish(body, key: SymmetricKey(data: pairing.key),
+                                            to: URL(string: pairing.topicURL.absoluteString + "-v")!)) != nil
+        }
+        if sent { Haptic.play(.success) }
+        return sent
     }
 
     /// Decrypts a relay poll response, oldest first, skipping anything not sealed with our key.
@@ -830,6 +852,9 @@ final class Store {
             fields["to"] = note.to
             fields["mp4"] = "1" // we play MP4 clips, so Claude may send one instead of a GIF
             fields["anySize"] = "1" // of any size
+            // Settings: both off unless turned on. The Mac sends no screenshots, and doesn't use the screen, without them.
+            fields["shots"] = UserDefaults.standard.bool(forKey: "screenshotsOn") ? "1" : "0"
+            fields["screen"] = UserDefaults.standard.bool(forKey: "computerUseOn") ? "1" : "0"
             let payload = try JSONSerialization.data(withJSONObject: fields)
             return try await Ntfy.publish(payload, key: SymmetricKey(data: pairing.key), to: pairing.topicURL) != nil
         } catch {
@@ -864,21 +889,14 @@ enum Pairer {
         let pairKey = derive("key", 32)
         let pairURL = URL(string: "\(Relay.base)/cwp-\(derive("topic", 16).hex)")!
 
-        let topic = "cw-\(SymmetricKey(size: .bits128).hex)"
-        let pairing = Pairing(topicURL: URL(string: "\(Relay.base)/\(topic)")!, key: SymmetricKey(size: .bits256).data)
-        let nonce = SymmetricKey(size: .bits128).hex
-
-        let offer = try JSONSerialization.data(withJSONObject: [
-            "topic": pairing.topicURL.absoluteString, "key": pairing.key.base64EncodedString(), "n": nonce,
-            "moves": true, // we follow the Mac to its own relay if its answer names one
-        ])
+        let offer = try Offer()
         // Listen for replies after our own offer's message id: no dependence on clocks agreeing.
         let offerID: String?
-        do { offerID = try await Ntfy.publish(offer, key: pairKey, to: pairURL) } catch is Ntfy.DailyLimit { throw PairError.dailyLimit }
+        do { offerID = try await Ntfy.publish(offer.body, key: pairKey, to: pairURL) } catch is Ntfy.DailyLimit { throw PairError.dailyLimit }
         guard let offerID else { throw PairError.relay }
         let url = URL(string: "\(pairURL.absoluteString)/json?since=\(offerID)")!
         let ack = await withTaskGroup(of: [String: String]?.self) { group in
-            group.addTask { await waitForAck(nonce, at: url, key: pairKey) }
+            group.addTask { await waitForAck(offer.nonce, at: url, key: pairKey) }
             group.addTask { try? await Task.sleep(for: waitFor); return nil }
             let first = await group.next() ?? nil
             group.cancelAll()
@@ -886,11 +904,28 @@ enum Pairer {
         }
         try Task.checkCancellation()
         guard let ack else { throw PairError.noAnswer }
-        // The Mac runs its own relay (`handoff relay setup`): the same topic, there instead.
-        if let relay = ack["relay"].flatMap(ownRelay) {
-            return Pairing(topicURL: relay.appending(path: topic), key: pairing.key)
+        return offer.pairing(ack: ack)
+    }
+
+    /// What the watch sends the Mac to pair, however they found each other: a fresh topic and key.
+    struct Offer {
+        let topic = "cw-\(SymmetricKey(size: .bits128).hex)"
+        let key = SymmetricKey(size: .bits256).data
+        let nonce = SymmetricKey(size: .bits128).hex
+        let body: Data
+
+        init() throws {
+            body = try JSONSerialization.data(withJSONObject: [
+                "topic": "\(Relay.base)/\(topic)", "key": key.base64EncodedString(), "n": nonce,
+                "moves": true, // we follow the Mac to its own relay if its answer names one
+            ])
         }
-        return pairing
+
+        /// The pairing, once the Mac acked: if it runs its own relay (`handoff relay setup`), the same topic there.
+        func pairing(ack: [String: String]) -> Pairing {
+            let base = ack["relay"].flatMap(Pairer.ownRelay) ?? URL(string: Relay.base)!
+            return Pairing(topicURL: base.appending(path: topic), key: key)
+        }
     }
 
     /// An https address with nothing but a host (and port), like https://mac.tail1234.ts.net.
@@ -927,6 +962,79 @@ enum Pairer {
             try? await Task.sleep(for: pause)
         }
         return nil
+    }
+}
+
+/// Pairing by picking the watch on the Mac (`handoff pair` lists the watches on its network): see
+/// "pair by picking the watch" in server/handoff.mjs. Watch apps can't use Bonjour, so both sides meet
+/// on a lobby topic derived from their public address. Unsealed there: our name and X25519 public key.
+@MainActor enum Lobby {
+    /// A Mac that picked this watch: its name, the key both derived, and the number both show.
+    struct Pick: Equatable {
+        let mac: String
+        let key: SymmetricKey
+        let number: String
+        static func == (a: Pick, b: Pick) -> Bool { a.key == b.key }
+    }
+
+    /// The lobby for this internet connection, or nil if we couldn't look up its address.
+    static func url() async -> URL? {
+        #if targetEnvironment(simulator)
+        if let ip = UserDefaults.standard.string(forKey: "lobbyIP") { return url(ip) } // tests
+        #endif
+        guard let (d, r) = try? await Relay.session.data(from: URL(string: "https://api.ipify.org")!), // IPv4, as the Mac asks
+              (r as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        let ip = String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return ip.isEmpty || ip.count > 45 ? nil : url(ip)
+    }
+    static func url(_ ip: String) -> URL {
+        let k = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: Data(ip.utf8)), salt: Data("handoff-lobby".utf8),
+                                       info: Data("topic".utf8), outputByteCount: 16)
+        return URL(string: "\(Relay.base)/cwp-\(k.hex)")!
+    }
+
+    /// Posts a plain JSON message. Returns its id, or nil if the relay didn't take it.
+    @discardableResult
+    static func post(_ obj: [String: String], to url: URL) async -> String? {
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.httpMethod = "POST"
+        req.httpBody = try? JSONSerialization.data(withJSONObject: obj)
+        guard let (data, res) = try? await Relay.session.data(for: req), (res as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return (try? JSONDecoder().decode(Ntfy.Event.self, from: data))?.id ?? ""
+    }
+
+    /// Follows the lobby after message `since` until `match` returns a value (reconnecting as needed).
+    static func wait<T>(at url: URL, since: String, _ match: ([String: String]) -> T?) async -> T? {
+        var since = since
+        while !Task.isCancelled {
+            var pause = Duration.seconds(1)
+            let stream = URL(string: "\(url.absoluteString)/json?since=\(since)")!
+            if let (bytes, res) = try? await Relay.session.bytes(from: stream) {
+                if (res as? HTTPURLResponse)?.statusCode != 200 { pause = .seconds(15) }
+                do {
+                    for try await line in bytes.lines {
+                        guard let ev = try? JSONDecoder().decode(Ntfy.Event.self, from: Data(line.utf8)), let id = ev.id else { continue }
+                        since = id
+                        guard let m = ev.message.flatMap({ try? JSONDecoder().decode([String: String].self, from: Data($0.utf8)) }) else { continue }
+                        if let found = match(m) { return found }
+                    }
+                } catch {}
+            } else {
+                pause = .seconds(5)
+            }
+            try? await Task.sleep(for: pause)
+        }
+        return nil
+    }
+
+    /// The session key and 6-digit number from the X25519 secret and both public keys (as the Mac does).
+    static func session(_ shared: SharedSecret, watchPub: Data, macPub: Data) -> (SymmetricKey, String) {
+        func derive(_ info: String, _ n: Int) -> SymmetricKey {
+            shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data("handoff-lobby".utf8),
+                                           sharedInfo: Data(info.utf8) + watchPub + macPub, outputByteCount: n)
+        }
+        let n = derive("sas", 4).data.reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+        return (derive("key", 32), String(format: "%06d", n % 1_000_000))
     }
 }
 
@@ -999,10 +1107,68 @@ struct PairView: View {
     @Environment(Store.self) private var store
     @State private var code = Self.firstCode()
     @State private var failure: String?
+    // In the lobby, `handoff pair` on a Mac lists us by this name.
+    @State private var lobbyID = String(SymmetricKey(size: .bits128).hex.prefix(16))
+    @State private var lobby: URL?
+    @State private var pick: Lobby.Pick?
+    @State private var approving = false
+    private var name: String { "Apple Watch \(lobbyID.prefix(4).uppercased())" }
 
     var body: some View {
+        if let pick { approve(pick) } else { codeList }
+    }
+
+    /// A Mac picked us in `handoff pair`: approve if the number matches the Mac's.
+    private func approve(_ pick: Lobby.Pick) -> some View {
         List {
-            Text("On your Mac, run handoff pair and type this code:")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Pair with \(pick.mac)?").font(.headline)
+                Text("Check your Mac shows this number:").font(.footnote).foregroundStyle(.secondary)
+            }
+            .listRowBackground(Color.clear)
+            HStack(spacing: 6) {
+                CodeHalf(text: String(pick.number.prefix(3)))
+                CodeHalf(text: String(pick.number.suffix(3)))
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(pick.number)
+            .listRowBackground(Color.clear)
+            Button { Task { await accept(pick) } } label: {
+                if approving { ProgressView() } else { Label("Approve", systemImage: "checkmark") }
+            }
+            .disabled(approving)
+            .accessibilityIdentifier("approvePairing")
+            Button("Not my Mac", role: .destructive) {
+                self.pick = nil
+                if let lobby { Task { await Lobby.post(["no": lobbyID], to: lobby) } }
+            }
+            .disabled(approving)
+        }
+        .navigationTitle("Pair")
+        .themedBackground()
+    }
+
+    private func accept(_ pick: Lobby.Pick) async {
+        guard let lobby, let offer = try? Pairer.Offer(), let sealed = try? AES.GCM.seal(offer.body, using: pick.key).combined else { return }
+        approving = true
+        defer { approving = false }
+        guard let sent = await Lobby.post(["offer": lobbyID, "box": sealed.base64EncodedString()], to: lobby) else {
+            failure = String(localized: "Couldn't reach the relay. Check your connection."); self.pick = nil; return
+        }
+        let id = lobbyID
+        let ack: [String: String]? = await Lobby.wait(at: lobby, since: sent) { m in
+            guard m["ack"] == id, let box = m["box"].flatMap({ Data(base64Encoded: $0) }),
+                  let plain = try? AES.GCM.open(AES.GCM.SealedBox(combined: box), using: pick.key),
+                  let ack = try? JSONDecoder().decode([String: String].self, from: plain), ack["ack"] == offer.nonce else { return nil }
+            return ack
+        }
+        if let ack { store.setPairing(offer.pairing(ack: ack)) }
+    }
+
+    private var codeList: some View {
+        List {
+            Text("On your Mac, run handoff pair and pick \(name), or type this code:")
                 .font(.footnote).foregroundStyle(.secondary)
                 .listRowBackground(Color.clear)
             HStack(spacing: 6) {
@@ -1041,6 +1207,28 @@ struct PairView: View {
                 failure = String(localized: "Couldn't reach the relay. Check your connection.")
             }
         }
+        // Meanwhile, say hello in the lobby every 20 seconds, until a Mac picks us.
+        .task(id: lobbyID) { await waitInLobby() }
+    }
+
+    private func waitInLobby() async {
+        guard pick == nil, let url = await Lobby.url() else { return }
+        lobby = url
+        let me = Curve25519.KeyAgreement.PrivateKey()
+        let pub = me.publicKey.rawRepresentation
+        let hello = ["hello": lobbyID, "name": name, "pub": pub.base64EncodedString()]
+        guard let since = await Lobby.post(hello, to: url) else { return }
+        let id = lobbyID
+        let announcing = Task { while !Task.isCancelled { try? await Task.sleep(for: .seconds(20)); await Lobby.post(hello, to: url) } }
+        defer { announcing.cancel() }
+        let found: Lobby.Pick? = await Lobby.wait(at: url, since: since) { m in
+            guard m["pick"] == id, let macPub = m["pub"].flatMap({ Data(base64Encoded: $0) }),
+                  let theirs = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: macPub),
+                  let shared = try? me.sharedSecretFromKeyAgreement(with: theirs) else { return nil }
+            let (key, number) = Lobby.session(shared, watchPub: pub, macPub: macPub)
+            return Lobby.Pick(mac: String((m["name"] ?? "Mac").prefix(40)), key: key, number: number)
+        }
+        if let found { pick = found }
     }
 
     #if targetEnvironment(simulator)
@@ -1142,8 +1330,8 @@ struct EditorView: View {
                 }
                 .pickerStyle(.navigationLink)
             }
-            // A chat `handoff host` runs can be opened on the Mac, as a normal Claude Code window.
-            if let chat = store.target, store.hostedChats.contains(chat) {
+            // Open the chat on the Mac: a host chat as a Claude Code window, a `handoff start` one by bringing its window forward.
+            if let chat = store.target, store.chats.contains(chat) {
                 Button {
                     Task {
                         opened = await store.openOnComputer(chat) ? String(localized: "Opened on your Mac") : String(localized: "Couldn't reach your Mac")
@@ -1165,12 +1353,13 @@ struct EditorView: View {
                 }
                 .onDelete { store.draft.remove(atOffsets: $0) }
 
-                HStack(spacing: 7) {
-                    Image(systemName: store.draft.isEmpty ? "mic.fill" : "plus").font(.footnote).foregroundStyle(accent)
-                        .accessibilityHidden(true)
-                    TextField(store.draft.isEmpty ? String(localized: "Jot an idea…") : String(localized: "Add a line…"), text: $line)
-                        .onSubmit(commitLine)
-                }
+                // The field draws its own box, so it's the whole row (an icon beside it put a box in a box).
+                TextField(store.draft.isEmpty ? String(localized: "Jot an idea…") : String(localized: "Add a line…"), text: $line,
+                          prompt: Text("\(Image(systemName: store.draft.isEmpty ? "mic.fill" : "plus")) ").foregroundStyle(accent)
+                            + Text(store.draft.isEmpty ? String(localized: "Jot an idea…") : String(localized: "Add a line…")))
+                    .onSubmit(commitLine)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
             }
 
             // The usual follow-ups, two taps away; only while nothing is being written.
@@ -1590,13 +1779,16 @@ struct QuickReplyView: View {
 struct ProjectsView: View {
     @Environment(Store.self) private var store
     @State private var stopping: String?
+    @State private var deleting: String?
+    @State private var opened: [String: String] = [:] // what Open on computer did, shown for a moment
+    @State private var deleted: Set<String> = [] // until the host's list no longer has them
     @State private var sent: Set<String> = [] // stopped or shipped from here, until the chat's status changes
     @AppStorage("theme") private var theme = Theme.clay
     private var accent: Color { theme.color }
 
     var body: some View {
         List {
-            ForEach(store.chats, id: \.self) { name in
+            ForEach(store.chats.filter { !deleted.contains($0) }, id: \.self) { name in
                 let s = store.status[name] ?? ChatStatus()
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
@@ -1624,6 +1816,20 @@ struct ProjectsView: View {
                     }
                     .foregroundStyle(accent).disabled(sent.contains(name))
                 }
+                Button {
+                    Task {
+                        let ok = await store.openOnComputer(name)
+                        opened[name] = ok ? String(localized: "Opened on your Mac") : String(localized: "Couldn't reach your Mac")
+                        try? await Task.sleep(for: .seconds(4))
+                        opened[name] = nil
+                    }
+                } label: {
+                    Label(opened[name] ?? String(localized: "Open on computer"), systemImage: "desktopcomputer")
+                }
+                .disabled(opened[name] != nil)
+                if store.hostedChats.contains(name) {
+                    Button(role: .destructive) { deleting = name } label: { Label("Delete chat", systemImage: "trash") }
+                }
             }
             if store.chats.isEmpty { Text("No chats are open.").font(.footnote).foregroundStyle(.secondary) }
         }
@@ -1637,7 +1843,16 @@ struct ProjectsView: View {
         } message: {
             Text("Claude stops the note it's working on and keeps what it did so far.")
         }
+        .confirmationDialog("Delete \(deleting ?? "")?", isPresented: Binding { deleting != nil } set: { if !$0 { deleting = nil } }) {
+            Button("Delete", role: .destructive) {
+                guard let name = deleting else { return }
+                Task { if await store.deleteChat(name) { deleted.insert(name) } }
+            }
+        } message: {
+            Text("Are you sure? The chat and its conversation go away. The project folder stays on your Mac.")
+        }
         .onChange(of: store.status) { sent.removeAll() } // stopped, or shipped: the buttons come back
+        .onChange(of: store.chats) { deleted.formIntersection(store.chats) }
         .task {
             while !Task.isCancelled {
                 await store.checkChats()
@@ -1717,6 +1932,8 @@ struct SettingsView: View {
     @State private var confirmClear = false
     @AppStorage("theme") private var theme = Theme.clay
     @AppStorage("themedBackground") private var themedBackground = true
+    @AppStorage("screenshotsOn") private var screenshotsOn = false
+    @AppStorage("computerUseOn") private var computerUseOn = false
 
     var body: some View {
         @Bindable var store = store
@@ -1734,6 +1951,16 @@ struct SettingsView: View {
                     Toggle("Suggestions", isOn: $store.suggestionsOn)
                 } footer: {
                     Text("Show Claude's suggested next step when it finishes a note.")
+                }
+                Section {
+                    Toggle("Screenshots", isOn: $screenshotsOn)
+                } footer: {
+                    Text("Claude sends a screenshot or clip of what it changed. For notes sent from now on.")
+                }
+                Section {
+                    Toggle("Computer use", isOn: $computerUseOn)
+                } footer: {
+                    Text("Claude may see your Mac's screen and use its mouse and keyboard, if your Mac allows it (handoff lab screen-control on). For notes sent from now on.")
                 }
                 Button("Delete All History", role: .destructive) { confirmClear = true }
                     .disabled(!store.notes.contains(where: \.sent))

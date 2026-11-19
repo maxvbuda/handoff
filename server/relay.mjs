@@ -117,6 +117,8 @@ export async function saveNote(ev, key) {
   if (typeof p.to === 'string' && p.to) note.to = p.to.slice(0, 40)
   if (p.mp4) note.mp4 = true // the watch plays MP4 clips (Hand-Off 1.4 and later)
   if (p.anySize) note.anySize = true // and downloads clips of any size (1.5 and later)
+  if (p.shots !== undefined) note.shots = p.shots === '1' // Settings → Screenshots (1.5 and later; off by default)
+  if (p.screen !== undefined) note.screen = p.screen === '1' // Settings → Computer use (1.5 and later; off by default). Older apps don't send it
   fs.mkdirSync(NOTES, { recursive: true, mode: 0o700 })
   // Created once: a retried or concurrently received copy of the same note fails here.
   try { fs.writeFileSync(noteFile(id), JSON.stringify(note, null, 2), { flag: 'wx' }); return { note, created: true } } catch {}
